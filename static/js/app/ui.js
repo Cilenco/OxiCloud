@@ -574,18 +574,11 @@ const ui = {
         }
         breadcrumb?.appendChild(homeIcon);
 
-        // -- Root/Home folder name (if available) is always the first element of the breadcrumb --
-        // TODO clarify the difference between homeIcon & this first element
-        if (app.userHomeFolderName) {
-            if (path.length === 0 || path[0].id !== app.userHomeFolderId) {
-                path.unshift({
-                    name: app.userHomeFolderName,
-                    id: app.userHomeFolderId
-                });
-            }
-        }
-
         // -- Root/Home + Intermediate + current segments --
+        // NOTE: The home folder entry is added by rebuildBreadCrumb() (filesView.js) when it
+        // reaches the root folder during traversal. updateBreadcrumb() just renders app.breadcrumbPath
+        // as-is — no implicit mutation. This allows shared-folder navigation to show only the
+        // reachable subtree without the home prefix leaking in.
         path.forEach((segment, index) => {
             const isLast = index === path.length - 1;
 

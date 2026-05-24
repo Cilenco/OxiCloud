@@ -79,13 +79,12 @@ async function rebuildBreadCrumb() {
                 currentFolderInfo = folderInfo;
             }
 
-            // XXX do not enter root into bread crumb updateBreadcrumb() method always display it
-            if (!folderInfo.is_root) {
-                app.breadcrumbPath.unshift({
-                    id: folderInfo.id,
-                    name: folderInfo.name
-                });
-            }
+            // Add every folder to the breadcrumb, including the root (home folder).
+            // updateBreadcrumb() no longer auto-prepends home — it's our responsibility here.
+            app.breadcrumbPath.unshift({
+                id: folderInfo.id,
+                name: folderInfo.name
+            });
 
             // iterate to parent folder
             id = folderInfo.parent_id;
