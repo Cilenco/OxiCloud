@@ -132,6 +132,13 @@ const batchToolbar = {
         document.querySelectorAll('.item-checkbox').forEach((cb) => {
             /** @type {HTMLInputElement} */ (cb).checked = false;
         });
+        // Reset the active component's internal selection state without going
+        // through onSelectionChange (which would re-enter this method).
+        if (this._activeComponent) {
+            this._activeComponent._selected.clear();
+            this._activeComponent._lastClickedIndex = -1;
+            this._activeComponent._syncSelectAllCheckbox();
+        }
         this._syncUI();
     },
 
@@ -344,6 +351,8 @@ const batchToolbar = {
     },
 
     _syncItemCheckboxes() {
+        // When a ResourceListComponent is active it owns checkbox state — skip.
+        if (this._activeComponent) return;
         document.querySelectorAll('.file-item').forEach((el) => {
             const cb = /** @type {HTMLInputElement} */ (el.querySelector('.item-checkbox'));
             if (cb) cb.checked = el.classList.contains('selected');
