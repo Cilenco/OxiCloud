@@ -2,7 +2,7 @@
 
 import { i18n } from '../core/i18n.js';
 import { inlineViewer } from '../features/files/inlineViewer.js';
-import { multiSelect } from '../features/files/multiSelect.js';
+import { batchToolbar } from '../features/files/batchToolbar.js';
 import { resolveHomeFolder } from './authSession.js';
 import { updateHistory } from './main.js';
 import { app } from './state.js';
@@ -217,9 +217,9 @@ async function loadFiles(options = { insertHistory: true }) {
 
         ui._items.clear();
         ui.resetFilesList();
-        if (multiSelect) {
-            multiSelect.clear();
-            multiSelect.init(); // this will wire buttons & select-all-checkbox
+        if (batchToolbar) {
+            batchToolbar.clear();
+            batchToolbar.init(); // this will wire buttons & select-all-checkbox
         }
 
         /** @type {FolderItem[]} */

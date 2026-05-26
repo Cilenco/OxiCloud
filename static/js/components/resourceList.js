@@ -86,6 +86,9 @@ export class ResourceListComponent {
         /** @type {Set<string>} */
         this._selected = new Set();
 
+        /** Index of the last clicked item — used for shift-click range selection. */
+        this._lastClickedIndex = -1;
+
         this._ownerVisible = this._cfg.showOwner;
 
         this._initDelegation();
@@ -110,8 +113,10 @@ export class ResourceListComponent {
 
         this._selected.clear();
         this._items.clear();
+        this._lastClickedIndex = -1;
 
         this._appendItems(folders, files, groupFn);
+        this._wireSelectAll();
     }
 
     /**
@@ -132,6 +137,40 @@ export class ResourceListComponent {
         if (header) this._container.appendChild(header);
         this._selected.clear();
         this._items.clear();
+        this._lastClickedIndex = -1;
+    }
+
+    /**
+     * Deselect all items without removing them from the DOM.
+     * Used by the batch toolbar after an operation completes.
+     */
+    clearSelection() {
+        this._selected.clear();
+        this._lastClickedIndex = -1;
+        this._container.querySelectorAll('.file-item.selected').forEach((card) => {
+            card.classList.remove('selected');
+            const cb = /** @type {HTMLInputElement | null} */ (card.querySelector('.item-checkbox'));
+            if (cb) cb.checked = false;
+        });
+        this._syncSelectAllCheckbox();
+        this._cfg.onSelectionChange?.([]);
+    }
+
+    /**
+     * Select all visible items in the container.
+     */
+    selectAll() {
+        this._container.querySelectorAll('.file-item').forEach((card) => {
+            const el = /** @type {HTMLElement} */ (card);
+            const id = el.dataset.fileId || el.dataset.folderId || '';
+            if (!id) return;
+            el.classList.add('selected');
+            const cb = /** @type {HTMLInputElement | null} */ (el.querySelector('.item-checkbox'));
+            if (cb) cb.checked = true;
+            this._selected.add(id);
+        });
+        this._syncSelectAllCheckbox();
+        this._notifySelectionChange();
     }
 
     /**
@@ -406,9 +445,13 @@ export class ResourceListComponent {
                 return;
             }
 
-            // Checkbox cell → selection
+            // Checkbox cell → selection (shift extends range)
             if (cfg.selectable && target.closest('.checkbox-cell')) {
-                this._toggleSelection(card, /** @type {MouseEvent} */ (e));
+                if (e.shiftKey) {
+                    this._handleShiftSelect(card);
+                } else {
+                    this._toggleSelection(card);
+                }
                 return;
             }
 
@@ -417,7 +460,13 @@ export class ResourceListComponent {
 
             // Modifier-key click → selection toggle
             if (e.metaKey || e.altKey || e.ctrlKey) {
-                if (cfg.selectable) this._toggleSelection(card, /** @type {MouseEvent} */ (e));
+                if (cfg.selectable) this._toggleSelection(card);
+                return;
+            }
+
+            // Shift-click anywhere on the card → extend selection range
+            if (e.shiftKey && cfg.selectable) {
+                this._handleShiftSelect(card);
                 return;
             }
 
@@ -454,11 +503,11 @@ export class ResourceListComponent {
     }
 
     /**
-     * Toggle selection state on a card and notify via `onSelectionChange`.
+     * Toggle selection on a single card and notify.
+     * Tracks `_lastClickedIndex` for subsequent shift-clicks.
      * @param {HTMLElement} card
-     * @param {MouseEvent}  _e   - Reserved for future shift-click range selection.
      */
-    _toggleSelection(card, _e) {
+    _toggleSelection(card) {
         const id = card.dataset.fileId || card.dataset.folderId || '';
         if (!id) return;
 
@@ -474,13 +523,96 @@ export class ResourceListComponent {
             this._selected.delete(id);
         }
 
-        if (this._cfg.onSelectionChange) {
-            /** @type {Array<FileItem|FolderItem>} */
-            const selectedItems = [...this._selected].flatMap((sid) => {
-                const item = this._items.get(sid);
-                return item ? [item] : [];
-            });
-            this._cfg.onSelectionChange(selectedItems);
+        // Record position for the next shift-click
+        const items = [...this._container.querySelectorAll('.file-item')];
+        this._lastClickedIndex = items.indexOf(card);
+
+        this._syncSelectAllCheckbox();
+        this._notifySelectionChange();
+    }
+
+    /**
+     * Extend the selection from `_lastClickedIndex` to `card` (inclusive).
+     * If no previous click exists, falls back to a plain toggle.
+     * @param {HTMLElement} card
+     */
+    _handleShiftSelect(card) {
+        const items = /** @type {HTMLElement[]} */ ([...this._container.querySelectorAll('.file-item')]);
+        const index = items.indexOf(card);
+
+        if (this._lastClickedIndex >= 0 && index >= 0) {
+            const start = Math.min(this._lastClickedIndex, index);
+            const end = Math.max(this._lastClickedIndex, index);
+            for (let i = start; i <= end; i++) {
+                const el = items[i];
+                const id = el.dataset.fileId || el.dataset.folderId || '';
+                if (!id) continue;
+                el.classList.add('selected');
+                const cb = /** @type {HTMLInputElement | null} */ (el.querySelector('.item-checkbox'));
+                if (cb) cb.checked = true;
+                this._selected.add(id);
+            }
+        } else {
+            this._toggleSelection(card);
+            return;
         }
+
+        this._lastClickedIndex = index;
+        this._syncSelectAllCheckbox();
+        this._notifySelectionChange();
+    }
+
+    /**
+     * Find the select-all checkbox in the container header and wire its
+     * `change` event.  Called after every `render()`.
+     */
+    _wireSelectAll() {
+        if (!this._cfg.selectable) return;
+        const cb = /** @type {HTMLInputElement | null} */ (this._container.querySelector('#select-all-checkbox'));
+        if (!cb) return;
+        // Replace with a fresh listener to avoid duplicates across re-renders
+        const fresh = /** @type {HTMLInputElement} */ (cb.cloneNode(true));
+        cb.parentNode?.replaceChild(fresh, cb);
+        fresh.addEventListener('change', () => {
+            if (fresh.checked) {
+                this.selectAll();
+            } else {
+                this.clearSelection();
+            }
+        });
+    }
+
+    /**
+     * Sync the three-state select-all checkbox in the list header.
+     * Checked = all selected, indeterminate = some selected, unchecked = none.
+     */
+    _syncSelectAllCheckbox() {
+        const cb = /** @type {HTMLInputElement | null} */ (this._container.querySelector('#select-all-checkbox'));
+        if (!cb) return;
+        const total = this._container.querySelectorAll('.file-item').length;
+        if (total === 0) {
+            cb.checked = false;
+            cb.indeterminate = false;
+        } else if (this._selected.size >= total) {
+            cb.checked = true;
+            cb.indeterminate = false;
+        } else if (this._selected.size > 0) {
+            cb.checked = false;
+            cb.indeterminate = true;
+        } else {
+            cb.checked = false;
+            cb.indeterminate = false;
+        }
+    }
+
+    /** Build the selected-items array and fire `onSelectionChange`. */
+    _notifySelectionChange() {
+        if (!this._cfg.onSelectionChange) return;
+        /** @type {Array<FileItem|FolderItem>} */
+        const selectedItems = [...this._selected].flatMap((id) => {
+            const item = this._items.get(id);
+            return item ? [item] : [];
+        });
+        this._cfg.onSelectionChange(selectedItems);
     }
 }

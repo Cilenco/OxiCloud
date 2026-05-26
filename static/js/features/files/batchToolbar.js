@@ -1,13 +1,15 @@
 /**
- * OxiCloud - Multi-Select & Batch Actions Module
+ * OxiCloud — Batch Toolbar Module
  *
- * Adds checkboxes to grid and list views, replaces the list-view header
- * with a NextCloud-style selection bar when items are selected, and
- * provides batch delete / move / download / favorites operations.
+ * Manages the floating selection bar that appears when items are selected,
+ * and executes batch operations (delete, move, download, favorites).
+ *
+ * Selection state (_selected, handleToggleItem, selectAll, …) is kept here
+ * while the main file manager still uses its own delegation (ui.js).
+ * Once ui.js is migrated to ResourceListComponent (plan step B5), all
+ * selection mechanics will live in the component and this module will
+ * shrink to only the toolbar UI and batch-operation API calls.
  */
-
-// TODO: rename into selection-bar ?
-// TODO: merge with photo part
 
 import { loadFiles } from '../../app/filesView.js';
 import { app } from '../../app/state.js';
@@ -22,7 +24,7 @@ import { getAuthHeaders } from './fileOperations.js';
  * @import {BatchResult} from './fileOperations.js'
  */
 
-const multiSelect = {
+const batchToolbar = {
     /** @type {Map<String, LightItem>} items: Map<id, { id, name, type, parentId }> */
 
     _selected: new Map(),
@@ -536,4 +538,4 @@ const multiSelect = {
     }
 };
 
-export { multiSelect };
+export { batchToolbar };

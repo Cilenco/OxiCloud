@@ -13,7 +13,7 @@ import { OxiIcons } from '../core/icons.js';
 import { contextMenus } from '../features/files/contextMenus.js';
 import { fileOps } from '../features/files/fileOperations.js';
 import { inlineViewer } from '../features/files/inlineViewer.js';
-import { multiSelect } from '../features/files/multiSelect.js';
+import { batchToolbar } from '../features/files/batchToolbar.js';
 import { wopiEditor } from '../features/files/wopiEditor.js';
 import { favorites } from '../features/library/favorites.js';
 import { recent } from '../features/library/recent.js';
@@ -727,9 +727,9 @@ const ui = {
      * @param {any} dataTransfer fallback if nothing is selected
      */
     async _dropToFolder(action, targetFolderId, dataTransfer) {
-        const selection = multiSelect.getSelection(targetFolderId);
+        const selection = batchToolbar.getSelection(targetFolderId);
 
-        multiSelect.clear();
+        batchToolbar.clear();
 
         if (selection.fileIds.length === 0 && selection.folderIds.length === 0) {
             // try to use dataTransfer (direct move without selection)
@@ -774,7 +774,7 @@ const ui = {
                 console.error(`drag and drop: action ${action} unknown`);
                 return;
         }
-        multiSelect.showBatchResult(action, result);
+        batchToolbar.showBatchResult(action, result);
         console.log(result);
     },
 
@@ -941,8 +941,8 @@ const ui = {
             }
 
             // shiftkey is used to complete selection
-            if (e.shiftKey && multiSelect) {
-                multiSelect.handleToggleItem(card, e);
+            if (e.shiftKey && batchToolbar) {
+                batchToolbar.handleToggleItem(card, e);
                 return;
             }
 
@@ -1512,13 +1512,13 @@ const ui = {
 
 /**
  * Toggle selection state of a file/folder card.
- * Routes through the multiSelect module so batch actions know about selected items.
+ * Routes through the batchToolbar module so batch actions know about selected items.
  * @param {HTMLDivElement} card
  * @param {MouseEvent} event
  */
 function toggleCardSelection(card, event) {
-    if (multiSelect) {
-        multiSelect.handleToggleItem(card, event);
+    if (batchToolbar) {
+        batchToolbar.handleToggleItem(card, event);
     } else {
         card.classList.toggle('selected');
     }
@@ -1641,17 +1641,17 @@ function initRubberBandSelection() {
             if (intersects) {
                 card.classList.add('selected');
 
-                // Sync with multiSelect module
-                if (multiSelect) {
-                    const info = multiSelect._extractInfo(/** @type {HTMLDivElement} */ (card));
-                    if (info) multiSelect.select(info.id, info.name, info.type, info.parentId);
+                // Sync with batchToolbar module
+                if (batchToolbar) {
+                    const info = batchToolbar._extractInfo(/** @type {HTMLDivElement} */ (card));
+                    if (info) batchToolbar.select(info.id, info.name, info.type, info.parentId);
                 }
             } else {
                 card.classList.remove('selected');
-                // Deselect from multiSelect module
-                if (multiSelect) {
-                    const info = multiSelect._extractInfo(/** @type {HTMLDivElement} */ (card));
-                    if (info) multiSelect.deselect(info.id);
+                // Deselect from batchToolbar module
+                if (batchToolbar) {
+                    const info = batchToolbar._extractInfo(/** @type {HTMLDivElement} */ (card));
+                    if (info) batchToolbar.deselect(info.id);
                 }
             }
         });
@@ -1663,7 +1663,7 @@ function initRubberBandSelection() {
         const hadSelection = selRect.style.display === 'block';
         selRect.style.display = 'none';
         // Update the batch bar after rubber band selection completes
-        if (multiSelect) multiSelect._syncUI();
+        if (batchToolbar) batchToolbar._syncUI();
         // Suppress the click event that follows mouseup so the global
         // deselect handler doesn't immediately clear the selection.
         if (hadSelection) {

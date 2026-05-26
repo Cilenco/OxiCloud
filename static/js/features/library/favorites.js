@@ -9,7 +9,7 @@
 import { ui } from '../../app/ui.js';
 import { getCsrfHeaders } from '../../core/csrf.js';
 import { i18n } from '../../core/i18n.js';
-import { multiSelect } from '../files/multiSelect.js';
+import { batchToolbar } from '../files/batchToolbar.js';
 import * as pathTooltip from '../pathTooltip.js';
 
 /** @import {FavoriteItem, FileItem, FolderItem} from '../../core/types.js' */
@@ -181,7 +181,7 @@ const favorites = {
             ui.resetFilesList(); // ensure also list visible & error hidden
             // wire buttons & select-all-checkbox as list header has changed in ui.resetFilesList()
             // FIXME: this case is not easy to understand, should apply better implementation
-            multiSelect.init();
+            batchToolbar.init();
 
             ui.updateBreadcrumb();
 

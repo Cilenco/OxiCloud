@@ -16,7 +16,7 @@
 
 import { ui } from '../../app/ui.js';
 import { i18n } from '../../core/i18n.js';
-import { multiSelect } from '../../features/files/multiSelect.js';
+import { batchToolbar } from '../../features/files/batchToolbar.js';
 import { ownerTooltip } from '../../features/ownerTooltip.js';
 import { grants } from '../../model/grants.js';
 import { systemUsers } from '../../model/systemUsers.js';
@@ -52,7 +52,7 @@ const sharedWithMeView = {
 
         // Standard files-view setup: clear list, show container, init multiselect
         ui.resetFilesList();
-        multiSelect.init();
+        batchToolbar.init();
         ui.updateBreadcrumb();
 
         await this._loadPage();

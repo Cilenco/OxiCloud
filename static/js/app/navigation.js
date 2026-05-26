@@ -4,7 +4,7 @@
  */
 
 import { i18n } from '../core/i18n.js';
-import { multiSelect } from '../features/files/multiSelect.js';
+import { batchToolbar } from '../features/files/batchToolbar.js';
 import { favorites } from '../features/library/favorites.js';
 import { musicView } from '../features/library/music.js';
 import { photosView } from '../features/library/photos.js';
@@ -201,7 +201,7 @@ function switchToSharedSection() {
         sharedView.show();
     });
 
-    if (multiSelect) multiSelect.clear();
+    if (batchToolbar) batchToolbar.clear();
 }
 
 function switchToSharedWithMeSection() {
@@ -221,7 +221,7 @@ function switchToSharedWithMeSection() {
     toggleFileContainer(true);
     syncViewContainers();
 
-    if (multiSelect) multiSelect.clear();
+    if (batchToolbar) batchToolbar.clear();
 
     // Load and render items into the files container
     sharedWithMeView.init();
@@ -253,7 +253,7 @@ function switchToFilesSection() {
     app.currentPath = app.userHomeFolderId || '';
     app.breadcrumbPath = [];
     ui.updateBreadcrumb();
-    if (multiSelect) multiSelect.clear();
+    if (batchToolbar) batchToolbar.clear();
 
     // temp solution
     sharedView.loadItems().then(() => {
@@ -296,7 +296,7 @@ function switchToFavoritesSection() {
             `);
     }
 
-    if (multiSelect) multiSelect.clear();
+    if (batchToolbar) batchToolbar.clear();
 }
 
 function switchToRecentFilesSection() {
@@ -329,7 +329,7 @@ function switchToRecentFilesSection() {
                 <p>Error loading the recent module</p>
             `);
     }
-    if (multiSelect) multiSelect.clear();
+    if (batchToolbar) batchToolbar.clear();
 }
 
 function switchToPhotosSection() {
@@ -352,7 +352,7 @@ function switchToPhotosSection() {
     if (photosView) {
         photosView.show();
     }
-    if (multiSelect) multiSelect.clear();
+    if (batchToolbar) batchToolbar.clear();
 }
 
 function switchToTrashSection() {
@@ -377,7 +377,7 @@ function switchToTrashSection() {
     // Load trash items
     loadTrashItems();
 
-    if (multiSelect) multiSelect.clear();
+    if (batchToolbar) batchToolbar.clear();
 }
 
 function switchToMusicSection() {
@@ -404,7 +404,7 @@ function switchToMusicSection() {
     if (musicView) {
         musicView.show();
     }
-    if (multiSelect) multiSelect.clear();
+    if (batchToolbar) batchToolbar.clear();
 }
 
 /**
@@ -423,7 +423,7 @@ function activateFilesUI() {
     breadcrumb?.classList.remove('hidden');
     toggleFileContainer(true);
     syncViewContainers();
-    if (multiSelect) multiSelect.clear();
+    if (batchToolbar) batchToolbar.clear();
 }
 
 export {

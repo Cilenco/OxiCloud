@@ -12,7 +12,7 @@ import { formatFileSize, formatQuotaSize } from '../core/formatters.js';
 import { i18n } from '../core/i18n.js';
 import { oxiIconsInit } from '../core/icons.js';
 import { fileOps } from '../features/files/fileOperations.js';
-import { multiSelect } from '../features/files/multiSelect.js';
+import { batchToolbar } from '../features/files/batchToolbar.js';
 import { favorites } from '../features/library/favorites.js';
 import { recent } from '../features/library/recent.js';
 import { fileSharing } from '../features/sharing/fileSharing.js';
@@ -50,7 +50,7 @@ let uploadDropdownDocumentClickHandler = null;
 let uploadDropdownBindingsController = null;
 let actionsBarDelegationBound = false;
 
-const _multiSelectButons = `
+const _batchToolbarButons = `
     <div class="action-buttons batch-selection-bar hidden" id="multi-select-buttons">
         <div class="list-header-checkbox">
             <button class="batch-bar-close" id="batch-selection-close" title="Cancel selection">
@@ -117,7 +117,7 @@ const ACTIONS_BAR_TEMPLATES = {
                 <span data-i18n="actions.new_folder">New folder</span>
             </button>
         </div>
-        ${_multiSelectButons}
+        ${_batchToolbarButons}
         ${_toggleButtons}
     `,
     trash: `
@@ -131,7 +131,7 @@ const ACTIONS_BAR_TEMPLATES = {
     `,
     favorites: `
         <div class="action-buttons" id="default-buttons"></div>
-        ${_multiSelectButons}
+        ${_batchToolbarButons}
         ${_toggleButtons}
     `,
     recent: `
@@ -141,7 +141,7 @@ const ACTIONS_BAR_TEMPLATES = {
                 <span data-i18n="actions.clear_recent">Clear recent</span>
             </button>
         </div>
-        ${_multiSelectButons}
+        ${_batchToolbarButons}
         ${_toggleButtons}
     `,
     sharedwithme: `
@@ -386,9 +386,9 @@ function initApp() {
     }
 
     // Initialize multi-select / batch actions
-    if (multiSelect?.init) {
+    if (batchToolbar?.init) {
         console.log('Initializing multi-select module');
-        multiSelect.init();
+        batchToolbar.init();
     }
 
     window.addEventListener('authenticationDone', async () => {

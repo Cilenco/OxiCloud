@@ -9,7 +9,7 @@
 import { ui } from '../../app/ui.js';
 import { getCsrfHeaders } from '../../core/csrf.js';
 import { i18n } from '../../core/i18n.js';
-import { multiSelect } from '../files/multiSelect.js';
+import { batchToolbar } from '../files/batchToolbar.js';
 import * as pathTooltip from '../pathTooltip.js';
 
 /** @import {FileItem, FolderItem, ItemTypeEnum, RecentItem} from '../../core/types.js' */
@@ -111,9 +111,9 @@ const recent = {
                 </div>
             `;
 
-            if (multiSelect) {
-                multiSelect.clear();
-                multiSelect.init(); // this will wire buttons & select-all-checkbox
+            if (batchToolbar) {
+                batchToolbar.clear();
+                batchToolbar.init(); // this will wire buttons & select-all-checkbox
             }
             ui.updateBreadcrumb();
 
