@@ -172,6 +172,29 @@ Enables the Nextcloud-compatible API layer (`/remote.php/`, `/ocs/`, `/status.ph
 | `OXICLOUD_NEXTCLOUD_INSTANCE_ID` | `ocnca` | Instance ID suffix used in `oc:id` formatting |
 | `OXICLOUD_NEXTCLOUD_VERSION` | `28.0.4` | Emulated Nextcloud version reported to clients (format: `major.minor.patch`) |
 
+## Outbound Email (SMTP)
+
+Used by the magic-link invitation flow and the login-via-email flow. When `OXICLOUD_SMTP_HOST` is empty (the default), the feature is disabled and any endpoint that needs email returns 503.
+
+| Variable | Default | Description |
+|---|---|---|
+| `OXICLOUD_SMTP_HOST` | — | SMTP server hostname or IP. Empty disables the feature. |
+| `OXICLOUD_SMTP_PORT` | `587` | Submission port (587 STARTTLS, 465 implicit TLS, 25 plain) |
+| `OXICLOUD_SMTP_USER` | — | SASL username. Leave empty for anonymous relay. |
+| `OXICLOUD_SMTP_PASS` | — | SASL password |
+| `OXICLOUD_SMTP_FROM` | — | `From:` mailbox; bare address or RFC 5322 name-address (`OxiCloud <noreply@example.com>`) |
+| `OXICLOUD_SMTP_TLS` | `starttls` | Transport encryption: `starttls`, `tls`, or `none` (emits startup WARN) |
+
+## Magic-Link Authentication
+
+Configures the invite-by-email and login-via-email flows. Both require SMTP to be configured above.
+
+| Variable | Default | Description |
+|---|---|---|
+| `OXICLOUD_MAGIC_LINK_TTL_HOURS` | `24` | Lifetime of a freshly-minted magic-link token, in hours |
+| `OXICLOUD_ALLOW_EXTERNAL_USERS` | `true` | Kill switch for the whole flow. `false` makes `POST /api/grants` reject `subject.type = "email"` for unknown addresses and `POST /api/auth/magic-link/send` return its uniform stub without issuing a token. |
+| `OXICLOUD_EXTERNAL_EMAIL_DOMAINS` | — | Comma-separated allowlist of email domains accepted when minting a new external user (case-insensitive, exact match on the post-`@` part). Empty = any domain is allowed, subject to `OXICLOUD_ALLOW_EXTERNAL_USERS`. Subdomains must be listed explicitly: `partner.com` does NOT match `eng.partner.com`. Example: `partner-a.com,partner-b.io`. |
+
 ## Trusted Proxy
 
 | Variable | Default | Description |
