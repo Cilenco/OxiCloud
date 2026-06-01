@@ -891,6 +891,11 @@ impl AppServiceFactory {
                 crate::application::services::subject_group_service::SubjectGroupService::new(
                     subject_group_repo.clone(),
                     pool.clone(),
+                    Arc::new(
+                        crate::infrastructure::repositories::pg::UserPgRepository::new(
+                            pool.clone(),
+                        ),
+                    ),
                 ),
             )),
         };

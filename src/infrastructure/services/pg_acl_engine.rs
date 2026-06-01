@@ -127,7 +127,16 @@ impl PgAclEngine {
 
     /// Expand a user subject into the set of subject UUIDs that should match
     /// in `access_grants`: the user's own UUID, every group the user is
-    /// transitively a member of, and the implicit `INTERNAL_GROUP_ID`.
+    /// transitively a member of, and (for internal users only) the implicit
+    /// `INTERNAL_GROUP_ID`.
+    ///
+    /// External users (`auth.users.is_external = TRUE`) do NOT belong to
+    /// the Internal virtual group — they are grant-only recipients whose
+    /// access is determined exclusively by explicit grants on their
+    /// `user_id` or on subject groups they were explicitly added to.
+    /// `SubjectGroupService::add_member` rejects externals, so the only
+    /// path by which an external user reaches a resource is via a
+    /// `subject_type='user'` grant.
     ///
     /// This is the **only** place transitive membership is walked. A future
     /// closure-table swap-in (Option 3 in the design doc) replaces just the
@@ -147,10 +156,25 @@ impl PgAclEngine {
 
         let mut set: HashSet<Uuid> = HashSet::new();
         set.insert(user_id);
-        // The Internal virtual group: implicit membership for every
-        // authenticated user. Once the external-users work lands this will
-        // narrow to `if !user.is_external { ... }`.
-        set.insert(INTERNAL_GROUP_ID);
+
+        // Look up `is_external` for the caller — external users do not
+        // belong to the Internal virtual group. Unknown user (no row) is
+        // treated as external to fail closed: a deleted or bogus user_id
+        // must not gain implicit Internal membership.
+        counters.sql_queries.fetch_add(1, Ordering::Relaxed);
+        let is_external: bool =
+            sqlx::query_scalar("SELECT is_external FROM auth.users WHERE id = $1")
+                .bind(user_id)
+                .fetch_optional(self.pool.as_ref())
+                .await
+                .map_err(|e| {
+                    DomainError::internal_error("PgAcl", format!("lookup is_external: {e}"))
+                })?
+                .unwrap_or(true);
+
+        if !is_external {
+            set.insert(INTERNAL_GROUP_ID);
+        }
 
         if let Some(repo) = &self.group_repo {
             counters.sql_queries.fetch_add(1, Ordering::Relaxed);

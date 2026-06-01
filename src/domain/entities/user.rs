@@ -43,6 +43,14 @@ pub struct User {
     /// `application/ports/user_lifecycle.rs`. The DB CHECK constraint
     /// `users_external_no_storage` is the schema-level safety net.
     is_external: bool,
+    /// Optional human-readable first/given name. Populated from OIDC
+    /// standard claim `given_name` at JIT provisioning, or via the
+    /// profile-edit endpoint. External users start with `None`.
+    given_name: Option<String>,
+    /// Optional human-readable last/family name. Populated from OIDC
+    /// standard claim `family_name` at JIT provisioning, or via the
+    /// profile-edit endpoint. External users start with `None`.
+    family_name: Option<String>,
 }
 
 impl User {
@@ -53,7 +61,7 @@ impl User {
     /// out of the domain layer.
     ///
     /// # Arguments
-    /// * `username` - User's username (3-32 characters)
+    /// * `username` - User's username (3-254 characters; may be an email)
     /// * `email` - User's email address
     /// * `password_hash` - Pre-hashed password (from PasswordHasherPort)
     /// * `role` - User's role
@@ -93,6 +101,8 @@ impl User {
             oidc_subject: None,
             image: None,
             is_external: false,
+            given_name: None,
+            family_name: None,
         })
     }
 
@@ -124,6 +134,8 @@ impl User {
             oidc_subject: Some(oidc_subject),
             image: None,
             is_external: false,
+            given_name: None,
+            family_name: None,
         })
     }
 
@@ -165,6 +177,8 @@ impl User {
             oidc_subject: None,
             image: None,
             is_external: true,
+            given_name: None,
+            family_name: None,
         })
     }
 
@@ -204,6 +218,8 @@ impl User {
             // sessions take a different path that hydrates from DB via
             // `from_data_full`.
             is_external: false,
+            given_name: None,
+            family_name: None,
         }
     }
 
@@ -224,6 +240,8 @@ impl User {
         oidc_subject: Option<String>,
         image: Option<String>,
         is_external: bool,
+        given_name: Option<String>,
+        family_name: Option<String>,
     ) -> Self {
         Self {
             id,
@@ -241,6 +259,8 @@ impl User {
             oidc_subject,
             image,
             is_external,
+            given_name,
+            family_name,
         }
     }
 
@@ -309,14 +329,60 @@ impl User {
         self.is_external
     }
 
+    pub fn given_name(&self) -> Option<&str> {
+        self.given_name.as_deref()
+    }
+
+    pub fn family_name(&self) -> Option<&str> {
+        self.family_name.as_deref()
+    }
+
     pub fn set_image(&mut self, image: Option<String>) {
         self.image = image;
         self.updated_at = Utc::now();
     }
 
+    pub fn set_given_name(&mut self, given_name: Option<String>) {
+        self.given_name = given_name;
+        self.updated_at = Utc::now();
+    }
+
+    pub fn set_family_name(&mut self, family_name: Option<String>) {
+        self.family_name = family_name;
+        self.updated_at = Utc::now();
+    }
+
+    /// Mutate the username after creation. Runs the same validation as the
+    /// constructor — callers must still ensure uniqueness at the repo
+    /// level. Bumps `updated_at`. Used by the post-create profile-edit
+    /// endpoint so a user invited with `username = email` can switch to a
+    /// shorter handle later. The home folder name is NOT renamed: it was
+    /// display text at creation; the folder is owned by `user_id`.
+    pub fn set_username(&mut self, new_username: String) -> UserResult<()> {
+        Self::validate_username(&new_username)?;
+        self.username = new_username;
+        self.updated_at = Utc::now();
+        Ok(())
+    }
+
     /// Returns true if this is an OIDC-only user (no password)
     pub fn is_oidc_user(&self) -> bool {
         self.oidc_provider.is_some()
+    }
+
+    /// Returns true iff this user has any non-magic-link authentication
+    /// method available — either a real (non-placeholder) password hash,
+    /// or a linked OIDC subject. Magic-link auto-authentication is only
+    /// offered for accounts without any of these.
+    ///
+    /// The placeholder-string approach is a known smell; a future
+    /// `auth.user_auth_methods` side-table will replace it. Migrating that
+    /// refactor touches only this method's body — every magic-link
+    /// eligibility check goes through here.
+    pub fn has_login_credential(&self) -> bool {
+        let has_password = self.password_hash != "__EXTERNAL_NO_PASSWORD__"
+            && self.password_hash != "__OIDC_NO_PASSWORD__";
+        has_password || self.oidc_subject.is_some()
     }
 
     /// Update the password hash.
@@ -355,15 +421,39 @@ impl User {
 
     // ── Shared validation helpers ──────────────────────────────────────
 
-    /// Usernames must be 3-32 chars and contain only ASCII alphanumerics,
-    /// hyphens, underscores, and dots.  This prevents XSS payloads like
-    /// `<img/src=x>` from being stored as usernames.
+    /// Usernames must be 3-254 chars. Two accepted shapes:
+    ///
+    /// - **Traditional**: ASCII alphanumerics, hyphens, underscores, and
+    ///   dots. No leading/trailing dot or hyphen. Capped at 254 chars
+    ///   (well above the historical 32-char limit, but still safe — the
+    ///   real upper bound is RFC 5321's email cap for the email shape).
+    /// - **Email-as-username**: must contain `@` and pass `validate_email`.
+    ///   External users created from invite-by-email get their normalized
+    ///   email as username; internal users may opt into this if they
+    ///   prefer their email as their handle.
+    ///
+    /// Both shapes prevent XSS payloads like `<img/src=x>` from being
+    /// stored as usernames — the traditional shape via the explicit
+    /// character set, the email shape via `validate_email`'s rejection of
+    /// `<`, `>`, quotes, whitespace, etc.
     fn validate_username(username: &str) -> UserResult<()> {
-        if username.len() < 3 || username.len() > 32 {
+        if username.len() < 3 || username.len() > 254 {
             return Err(UserError::InvalidUsername(
-                "Username must be between 3 and 32 characters".to_string(),
+                "Username must be between 3 and 254 characters".to_string(),
             ));
         }
+
+        if username.contains('@') {
+            // Email shape — defer to the email validator (which checks the
+            // forbidden-character set and the local-part / domain structure).
+            return Self::validate_email(username).map_err(|e| match e {
+                UserError::ValidationError(m) => {
+                    UserError::InvalidUsername(format!("Invalid email-as-username: {}", m))
+                }
+                other => other,
+            });
+        }
+
         if !username
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')

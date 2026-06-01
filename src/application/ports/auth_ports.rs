@@ -91,11 +91,25 @@ pub trait UserStoragePort: Send + Sync + 'static {
         usage_bytes: i64,
     ) -> Result<(), DomainError>;
 
-    /// Lists users with pagination
-    async fn list_users(&self, limit: i64, offset: i64) -> Result<Vec<User>, DomainError>;
+    /// Lists users with pagination. `include_external` defaults to `false`
+    /// at every call site that surfaces users to other internal users
+    /// (autocomplete, sharee search, etc.); only the admin management UI
+    /// passes `true`. See [`UserRepository::list_users`] for the rationale.
+    async fn list_users(
+        &self,
+        limit: i64,
+        offset: i64,
+        include_external: bool,
+    ) -> Result<Vec<User>, DomainError>;
 
     /// Searches users by username or email (SQL ILIKE) with a limit.
-    async fn search_users(&self, query: &str, limit: i64) -> Result<Vec<User>, DomainError>;
+    /// See [`list_users`] for the meaning of `include_external`.
+    async fn search_users(
+        &self,
+        query: &str,
+        limit: i64,
+        include_external: bool,
+    ) -> Result<Vec<User>, DomainError>;
 
     /// Lists users by role (e.g., "admin" or "user")
     async fn list_users_by_role(&self, role: &str) -> Result<Vec<User>, DomainError>;

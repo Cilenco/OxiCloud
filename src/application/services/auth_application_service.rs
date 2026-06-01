@@ -312,11 +312,11 @@ impl AuthApplicationService {
         password: String,
     ) -> Result<UserDto, DomainError> {
         // Validate username
-        if username.len() < 3 || username.len() > 32 {
+        if username.len() < 3 || username.len() > 254 {
             return Err(DomainError::new(
                 ErrorKind::InvalidInput,
                 "User",
-                "Username must be between 3 and 32 characters".to_string(),
+                "Username must be between 3 and 254 characters".to_string(),
             ));
         }
 
@@ -773,13 +773,30 @@ impl AuthApplicationService {
         Ok(admin_users.len() as i64)
     }
 
+    /// Lists internal users only. External (grant-only) users are filtered
+    /// out so that internal-user surfaces — system address book, OCS
+    /// sharee search, etc. — never expose external identities. Admin
+    /// surfaces that need the full list should call
+    /// [`list_users_including_external`] instead.
     pub async fn list_users(&self, limit: i64, offset: i64) -> Result<Vec<UserDto>, DomainError> {
-        let users = self.user_storage.list_users(limit, offset).await?;
+        let users = self.user_storage.list_users(limit, offset, false).await?;
         Ok(users.into_iter().map(UserDto::from).collect())
     }
 
+    /// Admin-only: lists users including external (grant-only) recipients.
+    /// Used by the admin user-management UI.
+    pub async fn list_users_including_external(
+        &self,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<UserDto>, DomainError> {
+        let users = self.user_storage.list_users(limit, offset, true).await?;
+        Ok(users.into_iter().map(UserDto::from).collect())
+    }
+
+    /// Searches internal users only. See [`list_users`] for the rationale.
     pub async fn search_users(&self, query: &str, limit: i64) -> Result<Vec<UserDto>, DomainError> {
-        let users = self.user_storage.search_users(query, limit).await?;
+        let users = self.user_storage.search_users(query, limit, false).await?;
         Ok(users.into_iter().map(UserDto::from).collect())
     }
 
@@ -793,11 +810,11 @@ impl AuthApplicationService {
         dto: crate::application::dtos::settings_dto::AdminCreateUserDto,
     ) -> Result<UserDto, DomainError> {
         // Validate username length
-        if dto.username.len() < 3 || dto.username.len() > 32 {
+        if dto.username.len() < 3 || dto.username.len() > 254 {
             return Err(DomainError::new(
                 ErrorKind::InvalidInput,
                 "User",
-                "Username must be between 3 and 32 characters".to_string(),
+                "Username must be between 3 and 254 characters".to_string(),
             ));
         }
 
