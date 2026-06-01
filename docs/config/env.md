@@ -185,6 +185,26 @@ Used by the magic-link invitation flow and the login-via-email flow. When `OXICL
 | `OXICLOUD_SMTP_FROM` | — | `From:` mailbox; bare address or RFC 5322 name-address (`OxiCloud <noreply@example.com>`) |
 | `OXICLOUD_SMTP_TLS` | `starttls` | Transport encryption: `starttls`, `tls`, or `none` (emits startup WARN) |
 
+### Reliability and retries
+
+OxiCloud does **not** spool mail. Each `send()` is a single attempt: if the remote SMTP server is unreachable, slow, or temporarily refusing the message, the send fails and the error is logged — there is no in-process retry, queue, or dead-letter handling. This keeps the HTTP path fast and the binary small at the cost of durability guarantees during a relay outage.
+
+For production deployments where you cannot afford to drop invitation mail during a brief relay outage, **point OxiCloud at a local MTA configured as a smarthost** (Postfix, OpenSMTPD, exim, or `msmtp-mta`/`nullmailer` for minimal setups). The local MTA owns the durable queue: it accepts the message from OxiCloud in milliseconds over the loopback, then retries with its own exponential backoff against your real upstream relay until the message is delivered or the queue lifetime expires.
+
+Typical local-relay config:
+
+```env
+OXICLOUD_SMTP_HOST=127.0.0.1
+OXICLOUD_SMTP_PORT=25
+OXICLOUD_SMTP_TLS=none           # loopback only — never over the network
+OXICLOUD_SMTP_FROM=OxiCloud <noreply@example.com>
+# OXICLOUD_SMTP_USER / _PASS unset — local MTA accepts loopback unauthenticated
+```
+
+Then configure the local MTA's smarthost / relayhost to your upstream provider (SendGrid, Amazon SES, your corporate relay, etc.). Verify durability by stopping the upstream relay, sending an invitation, restarting the relay, and confirming the mail eventually arrives.
+
+If you point `OXICLOUD_SMTP_HOST` directly at a remote SMTP server, treat the absence of retries as a documented constraint: a brief network glitch during invitation flow is a lost invite, and the recipient will need to be re-invited.
+
 ## Magic-Link Authentication
 
 Configures the invite-by-email and login-via-email flows. Both require SMTP to be configured above.

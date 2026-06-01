@@ -8,6 +8,19 @@
 //! On startup the `From:` mailbox is parsed once and cached. Bad config
 //! (unparseable `from`, missing `host`) is reported during construction
 //! so the server fails fast rather than at first send.
+//!
+//! # No retry / no spool — by design
+//!
+//! `send()` makes a single attempt against the configured relay. If the
+//! relay is unreachable, slow, or returns a transient error, the call
+//! returns `Err` and the message is gone. There is no in-process queue,
+//! no exponential backoff, no dead-letter handling.
+//!
+//! Operators who need durability across upstream relay outages should
+//! point `OXICLOUD_SMTP_HOST` at a local MTA (Postfix, OpenSMTPD,
+//! msmtp-mta, …) configured as a smarthost — the local MTA owns the
+//! retry queue. See `docs/config/env.md` → "Reliability and retries"
+//! for the recipe.
 
 use async_trait::async_trait;
 use lettre::message::{Mailbox, MultiPart, SinglePart, header::ContentType};
