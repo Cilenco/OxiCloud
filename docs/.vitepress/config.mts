@@ -102,6 +102,7 @@ export default defineConfig({
             { text: "Share Integration", link: "/architecture/share-integration" },
             { text: "Storage Quotas", link: "/architecture/storage-quotas" },
             { text: "File and Blob lifecycle", link: "/architecture/file-and-blob-lifecycle" },
+            { text: "ReBAC & Authorization", link: "/architecture/rebac-authorization" },
           ],
         },
         { text: "FAQ", link: "/faq" },
