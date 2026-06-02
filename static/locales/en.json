@@ -412,7 +412,14 @@
         "admin_create_error": "Error creating administrator account",
         "or": "or",
         "sso_login": "Sign in with SSO",
-        "sso_login_provider": "Sign in with {{provider}}"
+        "sso_login_provider": "Sign in with {{provider}}",
+        "magicLinkHint": "No password? Enter your email and we'll send you a one-time sign-in link.",
+        "magicLinkEmailLabel": "Email address",
+        "magicLinkEmailPlaceholder": "you@example.com",
+        "magicLinkSubmit": "Send sign-in link",
+        "magicLinkSent": "If an account exists for that email, a sign-in link has been sent. Check your inbox.",
+        "magicLinkUnavailable": "Sign-in by email is not available on this server.",
+        "magicLinkNetworkError": "Could not reach the server: {{message}}"
     },
     "storage": {
         "title": "Storage",

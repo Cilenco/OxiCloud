@@ -249,6 +249,152 @@ impl MagicLinkInviteService {
             }
         }
     }
+
+    /// Login-via-email flow (PR 10). Caller submits an email at
+    /// `/login`; we look it up — **never lazy-create** here, that path
+    /// is reserved for `resolve_or_create_recipient` — and if the
+    /// matched user has no other login credential, mint a NULL-resource
+    /// magic-link token and email a sign-in link. The redemption
+    /// endpoint lands a NULL-resource token on `/#/sharedwithme`.
+    ///
+    /// Always returns `Ok(())` so the caller can emit a uniform
+    /// response shape (`"If an account exists, a link will be sent."`)
+    /// that doesn't reveal whether the email maps to an account.
+    ///
+    /// Audit log distinguishes three real outcomes — `sent`,
+    /// `no_account`, `has_credential` — so operators can see the truth
+    /// while the API stays anti-enumeration-safe. A fourth outcome
+    /// `send_failed` is logged at `warn` level when SMTP errors.
+    pub async fn send_login_link(&self, raw_email: &str) -> Result<(), DomainError> {
+        let normalised = match normalize_email(raw_email) {
+            Ok(n) => n,
+            Err(e) => {
+                // Malformed input is treated the same as "no account"
+                // — uniform response, no oracle from validation errors.
+                tracing::info!(
+                    target: "audit",
+                    event = "auth.magic_link_send",
+                    reason = "malformed_email",
+                    error = %e,
+                    "🔗 login-link suppressed: malformed email",
+                );
+                return Ok(());
+            }
+        };
+
+        let user = match UserRepository::get_user_by_email(&*self.user_storage, &normalised).await {
+            Ok(u) => u,
+            Err(UserRepositoryError::NotFound(_)) => {
+                tracing::info!(
+                    target: "audit",
+                    event = "auth.magic_link_send",
+                    reason = "no_account",
+                    email = %normalised,
+                    "🔗 login-link suppressed: no account for '{}'",
+                    normalised,
+                );
+                return Ok(());
+            }
+            Err(e) => return Err(DomainError::from(e)),
+        };
+
+        if user.has_login_credential() {
+            // Refuse the magic-link path for users with a password /
+            // OIDC — accepting it would let an attacker bypass those
+            // factors by merely owning the mailbox at the moment of
+            // request. They should sign in through the regular form.
+            tracing::info!(
+                target: "audit",
+                event = "auth.magic_link_send",
+                reason = "has_credential",
+                user_id = %user.id(),
+                username = %user.username(),
+                email = %normalised,
+                "🔗 login-link suppressed: '{}' has another login credential",
+                user.username(),
+            );
+            return Ok(());
+        }
+
+        if !user.is_active() {
+            tracing::info!(
+                target: "audit",
+                event = "auth.magic_link_send",
+                reason = "account_deactivated",
+                user_id = %user.id(),
+                username = %user.username(),
+                email = %normalised,
+                "🔗 login-link suppressed: account deactivated for '{}'",
+                user.username(),
+            );
+            return Ok(());
+        }
+
+        // Mint a NULL-resource token. The redemption handler lands
+        // NULL-resource tokens on /#/sharedwithme (see PR 8).
+        let token = MagicLinkToken::new(user.id(), self.magic_link_cfg.ttl_hours, None);
+        self.magic_link_repo.create(&token).await?;
+
+        let link = format!(
+            "{}/magic/v1/{}",
+            self.public_base_url.trim_end_matches('/'),
+            token.token(),
+        );
+        let subject = "Sign in to OxiCloud".to_string();
+        let text_body = format!(
+            "Hello,\n\
+             \n\
+             Use the link below to sign in to OxiCloud. The link works \
+             once and expires in {ttl} hours.\n\
+             \n\
+             {link}\n\
+             \n\
+             If you didn't request this sign-in link, you can safely \
+             ignore this message — no further action is needed.\n\
+             \n\
+             — OxiCloud, {now}\n",
+            ttl = self.magic_link_cfg.ttl_hours,
+            link = link,
+            now = Utc::now().to_rfc3339(),
+        );
+
+        let message = EmailMessage {
+            to: user.email().to_string(),
+            subject,
+            text_body,
+            html_body: None,
+        };
+
+        match self.email_sender.send(message).await {
+            Ok(outcome) => {
+                tracing::info!(
+                    target: "audit",
+                    event = "auth.magic_link_send",
+                    reason = "sent",
+                    user_id = %user.id(),
+                    username = %user.username(),
+                    email = %normalised,
+                    smtp_code = outcome.code,
+                    smtp_message = %outcome.message,
+                    "🔗 login-link sent to '{}'",
+                    normalised,
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "audit",
+                    event = "auth.magic_link_send_failed",
+                    user_id = %user.id(),
+                    email = %normalised,
+                    error = %e.message,
+                    "🔗 login-link SMTP send failed for '{}'",
+                    normalised,
+                );
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// Lightweight conversion so the grant handler can derive a

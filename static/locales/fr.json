@@ -412,7 +412,14 @@
         "admin_create_error": "Erreur lors de la création du compte administrateur",
         "or": "ou",
         "sso_login": "Se connecter avec SSO",
-        "sso_login_provider": "Se connecter avec {{provider}}"
+        "sso_login_provider": "Se connecter avec {{provider}}",
+        "magicLinkHint": "Pas de mot de passe ? Saisissez votre adresse e-mail et nous vous enverrons un lien de connexion à usage unique.",
+        "magicLinkEmailLabel": "Adresse e-mail",
+        "magicLinkEmailPlaceholder": "vous@exemple.com",
+        "magicLinkSubmit": "Envoyer le lien de connexion",
+        "magicLinkSent": "Si un compte existe pour cette adresse, un lien de connexion vient d'être envoyé. Consultez votre boîte de réception.",
+        "magicLinkUnavailable": "La connexion par e-mail n'est pas disponible sur ce serveur.",
+        "magicLinkNetworkError": "Impossible de joindre le serveur : {{message}}"
     },
     "storage": {
         "title": "Stockage",

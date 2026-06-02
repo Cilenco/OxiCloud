@@ -275,6 +275,86 @@ HTTP 410
 
 
 # ─────────────────────────────────────────────────────────────
+# Step 15 — Login-via-email (PR 10). Bob has no password (he was
+#           lazily provisioned via the invite flow), so he is
+#           magic-link-eligible. He requests a fresh sign-in link.
+#           Anti-enumeration: the API always returns 200 with the
+#           same body regardless of whether an account exists.
+# ─────────────────────────────────────────────────────────────
+
+# 15a — bob requests a sign-in link.
+POST {{base_url}}/api/auth/magic-link/send
+Content-Type: application/json
+{ "email": "bob@externalcompany.com" }
+
+HTTP 200
+[Asserts]
+jsonpath "$.message" contains "sign-in link"
+
+# 15b — Capture the fresh email; extract the NEW magic-link URL.
+#       This is a NULL-resource token (login flow), so redemption
+#       will land on /#/sharedwithme rather than a deep-link.
+GET {{base_url}}/api/admin/smtp/test/captured?to=bob@externalcompany.com
+Authorization: Bearer {{alice_token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.subject" contains "Sign in"
+jsonpath "$.text_body" matches "/magic/v1/[A-Za-z0-9_-]+"
+[Captures]
+login_magic_url: jsonpath "$.text_body" regex "(https?://[^\\s]+/magic/v1/[A-Za-z0-9_-]+)"
+
+# 15c — Redeem the login link. Lands on /#/sharedwithme since the
+#        token has no resource target.
+GET {{login_magic_url}}
+
+HTTP 302
+[Asserts]
+header "Location" == "/#/sharedwithme"
+[Captures]
+bob_relogin_token: cookie "oxicloud_access"
+
+# 15d — Bob's new session works: he can read his incoming grants.
+GET {{base_url}}/api/grants/incoming/resources
+Authorization: Bearer {{bob_relogin_token}}
+
+HTTP 200
+
+# 15e — Unknown email → same uniform 200 (anti-enumeration). No
+#        mail is captured under that address.
+POST {{base_url}}/api/auth/magic-link/send
+Content-Type: application/json
+{ "email": "nobody-here@externalcompany.com" }
+
+HTTP 200
+[Asserts]
+jsonpath "$.message" contains "sign-in link"
+
+GET {{base_url}}/api/admin/smtp/test/captured?to=nobody-here@externalcompany.com
+Authorization: Bearer {{alice_token}}
+
+HTTP 404
+
+# 15f — Email maps to an existing internal user with a password
+#        (Alice the admin) → uniform 200 but the magic link is NOT
+#        actually sent. has_login_credential() short-circuits the
+#        service so password/OIDC accounts cannot be bypassed via
+#        mailbox ownership at the moment of request.
+POST {{base_url}}/api/auth/magic-link/send
+Content-Type: application/json
+{ "email": "{{email}}" }
+
+HTTP 200
+[Asserts]
+jsonpath "$.message" contains "sign-in link"
+
+GET {{base_url}}/api/admin/smtp/test/captured?to={{email}}
+Authorization: Bearer {{alice_token}}
+
+HTTP 404
+
+
+# ─────────────────────────────────────────────────────────────
 # Step 12 — Cleanup. Alice trashes the two test folders and
 #           deletes bob via the admin API so the suite's
 #           storage-check sweep at run.sh end sees a clean DB.

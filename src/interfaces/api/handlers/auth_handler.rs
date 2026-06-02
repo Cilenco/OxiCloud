@@ -29,6 +29,9 @@ pub fn auth_public_routes() -> Router<Arc<AppState>> {
         .route("/oidc/authorize", get(oidc_authorize))
         .route("/oidc/callback", get(oidc_callback))
         .route("/oidc/exchange", post(oidc_exchange))
+        // Login-via-email — sends a magic-link to the user's email so
+        // accounts with no other login credential can sign in.
+        .route("/magic-link/send", post(send_magic_link))
 }
 
 /// Protected auth routes — require authentication (auth + CSRF middleware
@@ -889,4 +892,63 @@ pub async fn oidc_exchange(
     );
     cookie_auth::append_csrf_cookie(response.headers_mut(), auth_response.expires_in);
     Ok(response)
+}
+
+/// Request body for `POST /api/auth/magic-link/send`.
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
+pub struct SendMagicLinkDto {
+    pub email: String,
+}
+
+/// POST /api/auth/magic-link/send — request a sign-in link by email.
+///
+/// Always returns 200 with a uniform message regardless of outcome, so
+/// the response shape doesn't leak account existence. The real outcome
+/// (sent / no-account / has-credential / account-deactivated /
+/// malformed-email) is recorded in the `audit` channel via
+/// `MagicLinkInviteService::send_login_link`.
+///
+/// 503 only when the magic-link feature isn't configured at all
+/// (SMTP env missing) — operators need to know about misconfiguration;
+/// it's not a state an anonymous caller can probe via timing because
+/// the absence of the entire feature is visible from any other
+/// endpoint touching `/api/auth/magic-link/*`.
+///
+/// Per-target-email rate limit is scheduled for PR 12 — without it,
+/// the endpoint could be used as an email-bombing primitive against a
+/// known recipient address.
+#[utoipa::path(
+    post,
+    path = "/api/auth/magic-link/send",
+    request_body = SendMagicLinkDto,
+    responses(
+        (status = 200, description = "Uniform 'if an account exists, a link will be sent' response"),
+        (status = 503, description = "Magic-link / SMTP is not configured on this server"),
+    ),
+    tag = "auth",
+)]
+pub async fn send_magic_link(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<SendMagicLinkDto>,
+) -> Result<Response, AppError> {
+    let Some(invite_svc) = state.magic_link_invite_service.as_ref() else {
+        return Err(AppError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Magic-link sign-in is not configured on this server",
+            "ServiceUnavailable",
+        ));
+    };
+
+    // The service swallows every operational outcome and logs the truth
+    // via the audit channel; we surface only an internal error (DB down,
+    // etc.). Anti-enumeration means we always return the same body.
+    invite_svc
+        .send_login_link(&body.email)
+        .await
+        .map_err(AppError::from)?;
+
+    let payload = serde_json::json!({
+        "message": "If an account exists for that email, a sign-in link will be sent.",
+    });
+    Ok((StatusCode::OK, Json(payload)).into_response())
 }
