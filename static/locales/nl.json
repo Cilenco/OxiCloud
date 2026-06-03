@@ -1,4 +1,37 @@
 {
+    "server": {
+        "magic_link": {
+            "page": {
+                "expired_title": "Deze aanmeldlink is niet meer geldig",
+                "expired_body": "De link is mogelijk verlopen of al gebruikt. We kunnen je een nieuwe sturen — die komt binnen enkele seconden in je inbox.",
+                "resend_to": "Stuur een nieuwe link naar {{email}}",
+                "generic_unavailable": "Deze aanmeldlink is niet meer geldig. Hij is mogelijk al gebruikt of verlopen. Vraag een nieuwe link aan via de aanmeldpagina.",
+                "service_unavailable": "Aanmelden via magic link is niet ingeschakeld op deze server.",
+                "internal_error": "Er is iets misgegaan bij het aanmelden. Probeer het opnieuw.",
+                "resend_failure": "Er is iets misgegaan bij het versturen van de link. Probeer het opnieuw.",
+                "cross_browser_title": "Doorgaan met aanmelden op dit apparaat?",
+                "cross_browser_body": "Je hebt deze aanmeldlink geopend in een andere browser of op een ander apparaat dan waar je hem hebt aangevraagd.",
+                "cross_browser_warning": "Als jij deze link hebt aangevraagd, kun je veilig doorgaan. Zo niet, sluit deze pagina — op Doorgaan klikken zou iemand anders bij je account aanmelden.",
+                "cross_browser_continue": "Doorgaan en aanmelden",
+                "resend_confirmation_title": "Controleer je inbox",
+                "resend_confirmation_body": "Als de aanmeldlink bij een actief account hoorde, is er zojuist een nieuwe link verstuurd. Controleer je inbox.",
+                "return_link": "Terug naar OxiCloud"
+            },
+            "email": {
+                "invitation": {
+                    "subject": "{{inviter}} heeft een {{kind}} met je gedeeld op OxiCloud",
+                    "body": "{{inviter}} heeft een {{kind}} met je gedeeld op OxiCloud.\n\nOpen het door op de onderstaande link te klikken:\n{{link}}\n\nDe link werkt eenmalig en verloopt over {{ttl_hours}} uur.\nAls je deze uitnodiging niet verwacht, kun je dit bericht negeren.\n\n— OxiCloud"
+                },
+                "login": {
+                    "subject": "Aanmelden bij OxiCloud",
+                    "body": "Hallo,\n\nGebruik de onderstaande link om je aan te melden bij OxiCloud. De link werkt eenmalig en verloopt over {{ttl_minutes}} minuten. Open hem op hetzelfde apparaat waarop je hem hebt aangevraagd.\n\n{{link}}\n\nAls je deze aanmeldlink niet hebt aangevraagd, kun je dit bericht negeren — er is geen verdere actie nodig.\n\n— OxiCloud"
+                },
+                "kind_file": "bestand",
+                "kind_folder": "map",
+                "english_fallback_divider": "--- Engelse versie hieronder ---"
+            }
+        }
+    },
     "app": {
         "title": "OxiCloud",
         "description": "Minimalistisch cloudopslagsysteem"
@@ -381,6 +414,8 @@
         "login_title": "Inloggen",
         "username": "Gebruikersnaam",
         "username_placeholder": "Voer je gebruikersnaam in",
+        "login_identifier": "Gebruikersnaam of e-mail",
+        "login_identifier_placeholder": "Voer uw gebruikersnaam of e-mailadres in",
         "password": "Wachtwoord",
         "password_placeholder": "Voer je wachtwoord in",
         "login_button": "Inloggen",
@@ -411,7 +446,14 @@
         "admin_create_error": "Fout bij het aanmaken van het administratoraccount",
         "or": "of",
         "sso_login": "Inloggen met SSO",
-        "sso_login_provider": "Inloggen met {{provider}}"
+        "sso_login_provider": "Inloggen met {{provider}}",
+        "magicLinkHint": "Geen wachtwoord? Voer uw e-mailadres in en we sturen u een eenmalige aanmeldlink.",
+        "magicLinkEmailLabel": "E-mailadres",
+        "magicLinkEmailPlaceholder": "jij@voorbeeld.nl",
+        "magicLinkSubmit": "Aanmeldlink versturen",
+        "magicLinkSent": "Als er een account bestaat voor dat e-mailadres, is een aanmeldlink verzonden. Controleer uw inbox.",
+        "magicLinkUnavailable": "Aanmelden per e-mail is niet beschikbaar op deze server.",
+        "magicLinkNetworkError": "Kan de server niet bereiken: {{message}}"
     },
     "storage": {
         "title": "Opslag",
@@ -694,6 +736,18 @@
         "minutes_ago": "{{n}} min geleden",
         "hours_ago": "{{n}}u geleden",
         "days_ago": "{{n}} dagen geleden",
+        "edit_profile": "Profiel bewerken",
+        "edit_oidc_managed": "Om uw gegevens (naam, voornaam, profielfoto, …) te wijzigen, werk ze bij bij uw identity provider. De wijzigingen verschijnen bij uw volgende aanmelding.",
+        "username_claim_hint": "2–64 tekens, letters / cijfers / punt / streepje / underscore. Eenmaal gekozen kan de gebruikersnaam niet meer worden gewijzigd (DAV/NextCloud-clients zijn ervan afhankelijk).",
+        "username_already_claimed": "Gebruikersnaam ingesteld en niet wijzigbaar (DAV/NextCloud-clients zijn ervan afhankelijk).",
+        "given_name": "Voornaam",
+        "family_name": "Achternaam",
+        "save_profile": "Wijzigingen opslaan",
+        "profile_saved": "Profiel bijgewerkt",
+        "profile_no_changes": "Geen wijzigingen om op te slaan.",
+        "profile_save_failed": "Opslaan mislukt",
+        "username_taken_error": "Die gebruikersnaam is al in gebruik.",
+        "username_immutable_error": "Uw gebruikersnaam is al ingesteld en kan hier niet worden gewijzigd. Neem contact op met een beheerder als u wilt hernoemen.",
         "change_password": "Wachtwoord wijzigen",
         "current_password": "Huidig wachtwoord",
         "new_password": "Nieuw wachtwoord",

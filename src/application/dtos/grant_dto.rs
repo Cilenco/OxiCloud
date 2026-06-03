@@ -23,7 +23,6 @@ pub enum SubjectTypeDto {
     User,
     Group,
     Token,
-    External,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -39,7 +38,6 @@ impl From<SubjectDto> for Subject {
             SubjectTypeDto::User => Subject::User(dto.id),
             SubjectTypeDto::Group => Subject::Group(dto.id),
             SubjectTypeDto::Token => Subject::Token(dto.id),
-            SubjectTypeDto::External => Subject::External(dto.id),
         }
     }
 }
@@ -50,7 +48,6 @@ impl From<Subject> for SubjectDto {
             Subject::User(id) => (SubjectTypeDto::User, id),
             Subject::Group(id) => (SubjectTypeDto::Group, id),
             Subject::Token(id) => (SubjectTypeDto::Token, id),
-            Subject::External(id) => (SubjectTypeDto::External, id),
         };
         SubjectDto { kind, id }
     }
@@ -181,11 +178,39 @@ impl Role {
 // Request DTOs
 // ════════════════════════════════════════════════════════════════════════════
 
+/// Subject shape accepted by `POST /api/grants`. Internally-tagged enum
+/// so the existing `{type:"user", id:"..."}` payload keeps working
+/// alongside the new `{type:"email", email:"..."}` variant that feeds
+/// the invite-by-email flow. The response-side [`SubjectDto`] stays
+/// unchanged — externals resolve to `Subject::User(uuid)` with
+/// `is_external = TRUE` on the user row, never a distinct subject type.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum SubjectInputDto {
+    User {
+        id: Uuid,
+    },
+    Group {
+        id: Uuid,
+    },
+    Token {
+        id: Uuid,
+    },
+    /// Invite-by-email. Lazily provisions an external user with the
+    /// normalised address as both username and email when no match
+    /// exists; otherwise reuses the existing user. Triggers a magic-link
+    /// invitation email when the resolved user has no other login
+    /// credential.
+    Email {
+        email: String,
+    },
+}
+
 /// `POST /api/grants` — accepts either `permissions` (explicit) or `role`.
 /// Server-side validation requires exactly one of the two to be present.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateGrantDto {
-    pub subject: SubjectDto,
+    pub subject: SubjectInputDto,
     pub resource: ResourceDto,
     #[serde(default)]
     pub permissions: Option<Vec<PermissionDto>>,

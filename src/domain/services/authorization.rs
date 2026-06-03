@@ -25,9 +25,6 @@ pub enum Subject {
     Group(Uuid),
     /// An anonymous share token (`storage.shares.id`).
     Token(Uuid),
-    /// A federated identity from another server — Open Cloud Mesh, external
-    /// OIDC, etc. Refers to `auth.external_subjects.id` (future table).
-    External(Uuid),
 }
 
 impl Subject {
@@ -37,26 +34,27 @@ impl Subject {
             Subject::User(_) => "user",
             Subject::Group(_) => "group",
             Subject::Token(_) => "token",
-            Subject::External(_) => "external",
         }
     }
 
     /// The raw UUID regardless of variant.
     pub fn id(&self) -> Uuid {
         match self {
-            Subject::User(id) | Subject::Group(id) | Subject::Token(id) | Subject::External(id) => {
-                *id
-            }
+            Subject::User(id) | Subject::Group(id) | Subject::Token(id) => *id,
         }
     }
 
     /// Reconstruct from a SQL row's `(subject_type, subject_id)` pair.
+    ///
+    /// `"external"` is no longer accepted: PR-2 of the external-users
+    /// work folded the federated-identity case into `Subject::User(uuid)`
+    /// with `auth.users.is_external = TRUE`. The DB CHECK constraint
+    /// on `storage.access_grants.subject_type` was narrowed to match.
     pub fn from_parts(subject_type: &str, id: Uuid) -> Option<Self> {
         match subject_type {
             "user" => Some(Subject::User(id)),
             "group" => Some(Subject::Group(id)),
             "token" => Some(Subject::Token(id)),
-            "external" => Some(Subject::External(id)),
             _ => None,
         }
     }
@@ -350,17 +348,14 @@ mod tests {
     #[test]
     fn subject_roundtrip() {
         let id = Uuid::new_v4();
-        let cases = [
-            Subject::User(id),
-            Subject::Group(id),
-            Subject::Token(id),
-            Subject::External(id),
-        ];
+        let cases = [Subject::User(id), Subject::Group(id), Subject::Token(id)];
         for s in cases {
             let back = Subject::from_parts(s.type_str(), s.id()).unwrap();
             assert_eq!(s, back);
         }
         assert!(Subject::from_parts("unknown", id).is_none());
+        // `external` is no longer a valid subject_type — folded into `user`.
+        assert!(Subject::from_parts("external", id).is_none());
     }
 
     #[test]

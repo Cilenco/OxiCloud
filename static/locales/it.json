@@ -1,4 +1,37 @@
 {
+    "server": {
+        "magic_link": {
+            "page": {
+                "expired_title": "Questo link di accesso non è più valido",
+                "expired_body": "Il link potrebbe essere scaduto o già stato utilizzato. Possiamo inviartene uno nuovo — arriverà nella tua casella di posta in pochi secondi.",
+                "resend_to": "Invia un nuovo link a {{email}}",
+                "generic_unavailable": "Questo link di accesso non è più valido. Potrebbe essere già stato utilizzato o essere scaduto. Richiedi un nuovo link dalla pagina di accesso.",
+                "service_unavailable": "L'accesso tramite magic link non è abilitato su questo server.",
+                "internal_error": "Si è verificato un errore durante l'accesso. Riprova.",
+                "resend_failure": "Si è verificato un errore durante l'invio del link. Riprova.",
+                "cross_browser_title": "Continuare l'accesso su questo dispositivo?",
+                "cross_browser_body": "Hai aperto questo link di accesso in un browser o dispositivo diverso da quello in cui l'hai richiesto.",
+                "cross_browser_warning": "Se hai richiesto questo link, puoi continuare in sicurezza. In caso contrario, chiudi questa pagina — cliccare su Continua effettuerebbe l'accesso di qualcun altro al tuo account.",
+                "cross_browser_continue": "Continua e accedi",
+                "resend_confirmation_title": "Controlla la tua casella di posta",
+                "resend_confirmation_body": "Se il link di accesso apparteneva a un account attivo, è appena stato inviato un nuovo link. Controlla la tua casella di posta.",
+                "return_link": "Torna a OxiCloud"
+            },
+            "email": {
+                "invitation": {
+                    "subject": "{{inviter}} ha condiviso un {{kind}} con te su OxiCloud",
+                    "body": "{{inviter}} ha condiviso un {{kind}} con te su OxiCloud.\n\nAprilo facendo clic sul link sottostante:\n{{link}}\n\nIl link è monouso e scade tra {{ttl_hours}} ore.\nSe non ti aspettavi questo invito, puoi ignorare questo messaggio.\n\n— OxiCloud"
+                },
+                "login": {
+                    "subject": "Accedi a OxiCloud",
+                    "body": "Ciao,\n\nUsa il link sottostante per accedere a OxiCloud. Il link è monouso e scade tra {{ttl_minutes}} minuti. Aprilo sullo stesso dispositivo da cui l'hai richiesto.\n\n{{link}}\n\nSe non hai richiesto questo link di accesso, puoi ignorare questo messaggio — non è necessaria alcuna ulteriore azione.\n\n— OxiCloud"
+                },
+                "kind_file": "file",
+                "kind_folder": "cartella",
+                "english_fallback_divider": "--- Versione inglese qui sotto ---"
+            }
+        }
+    },
     "app": {
         "title": "OxiCloud",
         "description": "Sistema di archiviazione cloud minimalista"
@@ -381,6 +414,8 @@
         "login_title": "Accedi",
         "username": "Nome utente",
         "username_placeholder": "Inserisci il tuo nome utente",
+        "login_identifier": "Nome utente o email",
+        "login_identifier_placeholder": "Inserisci il tuo nome utente o email",
         "password": "Password",
         "password_placeholder": "Inserisci la tua password",
         "login_button": "Accedi",
@@ -411,7 +446,14 @@
         "admin_create_error": "Errore durante la creazione dell'account amministratore",
         "or": "o",
         "sso_login": "Accedi con SSO",
-        "sso_login_provider": "Accedi con {{provider}}"
+        "sso_login_provider": "Accedi con {{provider}}",
+        "magicLinkHint": "Niente password? Inserisci la tua email e ti invieremo un link di accesso monouso.",
+        "magicLinkEmailLabel": "Indirizzo email",
+        "magicLinkEmailPlaceholder": "tu@esempio.com",
+        "magicLinkSubmit": "Invia link di accesso",
+        "magicLinkSent": "Se esiste un account per questa email, è stato inviato un link di accesso. Controlla la tua casella di posta.",
+        "magicLinkUnavailable": "L'accesso tramite email non è disponibile su questo server.",
+        "magicLinkNetworkError": "Impossibile raggiungere il server: {{message}}"
     },
     "storage": {
         "title": "Archiviazione",
@@ -694,6 +736,18 @@
         "minutes_ago": "{{n}} min fa",
         "hours_ago": "{{n}}h fa",
         "days_ago": "{{n}} giorni fa",
+        "edit_profile": "Modifica profilo",
+        "edit_oidc_managed": "Per modificare le tue informazioni (nome, cognome, foto profilo, …), aggiornale presso il tuo identity provider. Le modifiche compariranno al prossimo accesso.",
+        "username_claim_hint": "Da 2 a 64 caratteri, lettere / cifre / punto / trattino / sottolineatura. Una volta scelto, il nome utente non può essere modificato (i client DAV/NextCloud dipendono da esso).",
+        "username_already_claimed": "Nome utente impostato e non modificabile (i client DAV/NextCloud dipendono da esso).",
+        "given_name": "Nome",
+        "family_name": "Cognome",
+        "save_profile": "Salva modifiche",
+        "profile_saved": "Profilo aggiornato",
+        "profile_no_changes": "Nessuna modifica da salvare.",
+        "profile_save_failed": "Salvataggio non riuscito",
+        "username_taken_error": "Questo nome utente è già in uso.",
+        "username_immutable_error": "Il tuo nome utente è già impostato e non può essere cambiato qui. Contatta un amministratore se desideri rinominarlo.",
         "change_password": "Cambia Password",
         "current_password": "Password Attuale",
         "new_password": "Nuova Password",

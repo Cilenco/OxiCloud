@@ -1,4 +1,37 @@
 {
+    "server": {
+        "magic_link": {
+            "page": {
+                "expired_title": "Dieser Anmeldelink ist nicht mehr gültig",
+                "expired_body": "Der Link ist möglicherweise abgelaufen oder wurde bereits verwendet. Wir können Ihnen einen neuen senden — er wird in wenigen Sekunden in Ihrem Posteingang sein.",
+                "resend_to": "Neuen Link an {{email}} senden",
+                "generic_unavailable": "Dieser Anmeldelink ist nicht mehr gültig. Er wurde möglicherweise bereits verwendet oder ist abgelaufen. Fordern Sie auf der Anmeldeseite einen neuen Link an.",
+                "service_unavailable": "Die Magic-Link-Anmeldung ist auf diesem Server nicht aktiviert.",
+                "internal_error": "Bei der Anmeldung ist ein Fehler aufgetreten. Bitte versuchen Sie es erneut.",
+                "resend_failure": "Beim Senden des Links ist ein Fehler aufgetreten. Bitte versuchen Sie es erneut.",
+                "cross_browser_title": "Anmeldung auf diesem Gerät fortsetzen?",
+                "cross_browser_body": "Sie haben diesen Anmeldelink in einem anderen Browser oder Gerät geöffnet als dem, von dem aus Sie ihn angefordert haben.",
+                "cross_browser_warning": "Wenn Sie diesen Link angefordert haben, können Sie sicher fortfahren. Falls nicht, schließen Sie diese Seite — ein Klick auf Weiter würde jemand anderen in Ihrem Konto anmelden.",
+                "cross_browser_continue": "Fortfahren und anmelden",
+                "resend_confirmation_title": "Prüfen Sie Ihren Posteingang",
+                "resend_confirmation_body": "Falls der Anmeldelink zu einem aktiven Konto gehörte, wurde gerade ein neuer Link gesendet. Bitte prüfen Sie Ihren Posteingang.",
+                "return_link": "Zurück zu OxiCloud"
+            },
+            "email": {
+                "invitation": {
+                    "subject": "{{inviter}} hat einen {{kind}} mit Ihnen auf OxiCloud geteilt",
+                    "body": "{{inviter}} hat einen {{kind}} mit Ihnen auf OxiCloud geteilt.\n\nÖffnen Sie ihn, indem Sie auf den folgenden Link klicken:\n{{link}}\n\nDer Link kann nur einmal verwendet werden und läuft in {{ttl_hours}} Stunden ab.\nFalls Sie diese Einladung nicht erwartet haben, können Sie diese Nachricht ignorieren.\n\n— OxiCloud"
+                },
+                "login": {
+                    "subject": "Anmeldung bei OxiCloud",
+                    "body": "Hallo,\n\nVerwenden Sie den Link unten, um sich bei OxiCloud anzumelden. Der Link kann nur einmal verwendet werden und läuft in {{ttl_minutes}} Minuten ab. Öffnen Sie ihn auf demselben Gerät, von dem aus Sie ihn angefordert haben.\n\n{{link}}\n\nFalls Sie diesen Anmeldelink nicht angefordert haben, können Sie diese Nachricht ignorieren — es ist keine weitere Aktion erforderlich.\n\n— OxiCloud"
+                },
+                "kind_file": "Datei",
+                "kind_folder": "Ordner",
+                "english_fallback_divider": "--- Englische Version unten ---"
+            }
+        }
+    },
     "app": {
         "title": "OxiCloud",
         "description": "Minimalistisches Cloud-Speichersystem"
@@ -381,6 +414,8 @@
         "login_title": "Anmelden",
         "username": "Benutzername",
         "username_placeholder": "Geben Sie Ihren Benutzernamen ein",
+        "login_identifier": "Benutzername oder E-Mail",
+        "login_identifier_placeholder": "Geben Sie Ihren Benutzernamen oder Ihre E-Mail-Adresse ein",
         "password": "Passwort",
         "password_placeholder": "Geben Sie Ihr Passwort ein",
         "login_button": "Anmelden",
@@ -411,7 +446,14 @@
         "admin_create_error": "Fehler beim Erstellen des Administratorkontos",
         "or": "oder",
         "sso_login": "Mit SSO anmelden",
-        "sso_login_provider": "Mit {{provider}} anmelden"
+        "sso_login_provider": "Mit {{provider}} anmelden",
+        "magicLinkHint": "Kein Passwort? Geben Sie Ihre E-Mail-Adresse ein und wir senden Ihnen einen einmaligen Anmeldelink.",
+        "magicLinkEmailLabel": "E-Mail-Adresse",
+        "magicLinkEmailPlaceholder": "sie@beispiel.de",
+        "magicLinkSubmit": "Anmeldelink senden",
+        "magicLinkSent": "Wenn für diese E-Mail-Adresse ein Konto besteht, wurde ein Anmeldelink gesendet. Überprüfen Sie Ihren Posteingang.",
+        "magicLinkUnavailable": "Die Anmeldung per E-Mail ist auf diesem Server nicht verfügbar.",
+        "magicLinkNetworkError": "Server nicht erreichbar: {{message}}"
     },
     "storage": {
         "title": "Speicher",
@@ -694,6 +736,18 @@
         "minutes_ago": "vor {{n}} Min",
         "hours_ago": "vor {{n}} Std",
         "days_ago": "vor {{n}} Tagen",
+        "edit_profile": "Profil bearbeiten",
+        "edit_oidc_managed": "Um Ihre Informationen (Name, Vorname, Profilbild, …) zu ändern, aktualisieren Sie sie bitte bei Ihrem Identity-Provider. Ihre Änderungen erscheinen bei der nächsten Anmeldung.",
+        "username_claim_hint": "2–64 Zeichen, Buchstaben / Ziffern / Punkt / Bindestrich / Unterstrich. Nach der Wahl kann der Benutzername nicht mehr geändert werden (DAV/NextCloud-Clients hängen davon ab).",
+        "username_already_claimed": "Benutzername ist gesetzt und kann nicht geändert werden (DAV/NextCloud-Clients hängen davon ab).",
+        "given_name": "Vorname",
+        "family_name": "Nachname",
+        "save_profile": "Änderungen speichern",
+        "profile_saved": "Profil aktualisiert",
+        "profile_no_changes": "Keine Änderungen zu speichern.",
+        "profile_save_failed": "Speichern fehlgeschlagen",
+        "username_taken_error": "Dieser Benutzername ist bereits vergeben.",
+        "username_immutable_error": "Ihr Benutzername ist bereits gesetzt und kann hier nicht geändert werden. Wenden Sie sich an einen Administrator, wenn Sie umbenennen möchten.",
         "change_password": "Passwort ändern",
         "current_password": "Aktuelles Passwort",
         "new_password": "Neues Passwort",

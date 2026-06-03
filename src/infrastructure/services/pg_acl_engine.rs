@@ -127,7 +127,16 @@ impl PgAclEngine {
 
     /// Expand a user subject into the set of subject UUIDs that should match
     /// in `access_grants`: the user's own UUID, every group the user is
-    /// transitively a member of, and the implicit `INTERNAL_GROUP_ID`.
+    /// transitively a member of, and (for internal users only) the implicit
+    /// `INTERNAL_GROUP_ID`.
+    ///
+    /// External users (`auth.users.is_external = TRUE`) do NOT belong to
+    /// the Internal virtual group — they are grant-only recipients whose
+    /// access is determined exclusively by explicit grants on their
+    /// `user_id` or on subject groups they were explicitly added to.
+    /// `SubjectGroupService::add_member` rejects externals, so the only
+    /// path by which an external user reaches a resource is via a
+    /// `subject_type='user'` grant.
     ///
     /// This is the **only** place transitive membership is walked. A future
     /// closure-table swap-in (Option 3 in the design doc) replaces just the
@@ -147,10 +156,25 @@ impl PgAclEngine {
 
         let mut set: HashSet<Uuid> = HashSet::new();
         set.insert(user_id);
-        // The Internal virtual group: implicit membership for every
-        // authenticated user. Once the external-users work lands this will
-        // narrow to `if !user.is_external { ... }`.
-        set.insert(INTERNAL_GROUP_ID);
+
+        // Look up `is_external` for the caller — external users do not
+        // belong to the Internal virtual group. Unknown user (no row) is
+        // treated as external to fail closed: a deleted or bogus user_id
+        // must not gain implicit Internal membership.
+        counters.sql_queries.fetch_add(1, Ordering::Relaxed);
+        let is_external: bool =
+            sqlx::query_scalar("SELECT is_external FROM auth.users WHERE id = $1")
+                .bind(user_id)
+                .fetch_optional(self.pool.as_ref())
+                .await
+                .map_err(|e| {
+                    DomainError::internal_error("PgAcl", format!("lookup is_external: {e}"))
+                })?
+                .unwrap_or(true);
+
+        if !is_external {
+            set.insert(INTERNAL_GROUP_ID);
+        }
 
         if let Some(repo) = &self.group_repo {
             counters.sql_queries.fetch_add(1, Ordering::Relaxed);
@@ -935,7 +959,7 @@ impl AuthorizationEngine for PgAclEngine {
                     )
                     SELECT ag.resource_type, ag.resource_id, rp.first_shared_at,
                            ag.subject_type, ag.subject_id,
-                           COALESCE(u.username, sg.name::text, sh.item_name, fi.name, fld.name, ag.subject_id::text) AS subject_display,
+                           COALESCE(u.username, u.email, sg.name::text, sh.item_name, fi.name, fld.name, ag.subject_id::text) AS subject_display,
                            ag.id AS grant_id, ag.granted_at, ag.expires_at, ag.permission,
                            rp.sort_str, rp.sort_int,
                            (sh.password_hash IS NOT NULL) AS has_password
@@ -959,7 +983,7 @@ impl AuthorizationEngine for PgAclEngine {
                                  WHEN ag.subject_type = 'token' AND sh.password_hash IS NOT NULL THEN 2
                                  ELSE 3
                              END ASC,
-                             LOWER(COALESCE(u.username, sg.name::text, sh.item_name, ag.subject_id::text)) ASC,
+                             LOWER(COALESCE(u.username, u.email, sg.name::text, sh.item_name, ag.subject_id::text)) ASC,
                              ag.granted_at"#
                 )
             }
@@ -999,7 +1023,7 @@ impl AuthorizationEngine for PgAclEngine {
                             ag.resource_id,
                             ag.subject_type,
                             ag.subject_id,
-                            MAX(COALESCE(u.username, sg.name::text, sh.item_name, ag.subject_id::text)) AS subject_display,
+                            MAX(COALESCE(u.username, u.email, sg.name::text, sh.item_name, ag.subject_id::text)) AS subject_display,
                             BOOL_OR(sh.password_hash IS NOT NULL) AS has_password,
                             MAX(CASE
                                 WHEN ag.subject_type = 'group' THEN 0
@@ -1084,7 +1108,7 @@ impl AuthorizationEngine for PgAclEngine {
                             ag.resource_id,
                             ag.subject_type,
                             ag.subject_id,
-                            MAX(COALESCE(u.username, sh.item_name, ag.subject_id::text)) AS subject_display,
+                            MAX(COALESCE(u.username, u.email, sh.item_name, ag.subject_id::text)) AS subject_display,
                             BOOL_OR(sh.password_hash IS NOT NULL) AS has_password,
                             CASE
                                 WHEN BOOL_OR(ag.permission = 'delete')
@@ -1172,7 +1196,7 @@ impl AuthorizationEngine for PgAclEngine {
                     )
                     SELECT ag.resource_type, ag.resource_id, rp.first_shared_at,
                            ag.subject_type, ag.subject_id,
-                           COALESCE(u.username, sh.item_name, fi.name, fld.name, ag.subject_id::text) AS subject_display,
+                           COALESCE(u.username, u.email, sh.item_name, fi.name, fld.name, ag.subject_id::text) AS subject_display,
                            ag.id AS grant_id, ag.granted_at, ag.expires_at, ag.permission,
                            NULL::text AS sort_str, NULL::bigint AS sort_int,
                            (sh.password_hash IS NOT NULL) AS has_password

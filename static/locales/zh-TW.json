@@ -1,4 +1,37 @@
 {
+    "server": {
+        "magic_link": {
+            "page": {
+                "expired_title": "此登入連結已不再有效",
+                "expired_body": "連結可能已過期或已被使用。我們可以為您發送一個新的 — 幾秒鐘內將會抵達您的收件匣。",
+                "resend_to": "發送新連結至 {{email}}",
+                "generic_unavailable": "此登入連結已不再有效。它可能已被使用或已過期。請在登入頁面請求新連結。",
+                "service_unavailable": "此伺服器未啟用魔法連結登入。",
+                "internal_error": "登入時發生錯誤。請重試。",
+                "resend_failure": "發送連結時發生錯誤。請重試。",
+                "cross_browser_title": "在此裝置上繼續登入?",
+                "cross_browser_body": "您在與請求時不同的瀏覽器或裝置上開啟了此登入連結。",
+                "cross_browser_warning": "如果是您請求了此連結,可以安全繼續。否則,請關閉此頁面 — 點擊「繼續」將使其他人登入您的帳戶。",
+                "cross_browser_continue": "繼續並登入",
+                "resend_confirmation_title": "請檢查您的收件匣",
+                "resend_confirmation_body": "如果登入連結屬於活躍帳戶,新連結剛剛已發送。請檢查您的收件匣。",
+                "return_link": "返回 OxiCloud"
+            },
+            "email": {
+                "invitation": {
+                    "subject": "{{inviter}} 在 OxiCloud 上與您分享了一個{{kind}}",
+                    "body": "{{inviter}} 在 OxiCloud 上與您分享了一個{{kind}}。\n\n點擊下方連結開啟:\n{{link}}\n\n該連結僅可使用一次,並將在 {{ttl_hours}} 小時後過期。\n如果您未預期收到此邀請,可以忽略此訊息。\n\n— OxiCloud"
+                },
+                "login": {
+                    "subject": "登入 OxiCloud",
+                    "body": "您好,\n\n使用下方連結登入 OxiCloud。該連結僅可使用一次,並將在 {{ttl_minutes}} 分鐘後過期。請在請求時使用的同一裝置上開啟。\n\n{{link}}\n\n如果您未請求此登入連結,可以忽略此訊息 — 無需進一步操作。\n\n— OxiCloud"
+                },
+                "kind_file": "檔案",
+                "kind_folder": "資料夾",
+                "english_fallback_divider": "--- 以下為英文版本 ---"
+            }
+        }
+    },
     "app": {
         "title": "OxiCloud",
         "description": "極簡雲端儲存系統"
@@ -381,6 +414,8 @@
         "login_title": "登入",
         "username": "使用者名稱",
         "username_placeholder": "輸入你的使用者名稱",
+        "login_identifier": "使用者名稱或電子郵件",
+        "login_identifier_placeholder": "請輸入使用者名稱或電子郵件",
         "password": "密碼",
         "password_placeholder": "輸入你的密碼",
         "login_button": "登入",
@@ -411,7 +446,14 @@
         "admin_create_error": "建立管理員賬號時出錯",
         "or": "或",
         "sso_login": "使用 SSO 登入",
-        "sso_login_provider": "使用 {{provider}} 登入"
+        "sso_login_provider": "使用 {{provider}} 登入",
+        "magicLinkHint": "沒有密碼？輸入您的電子郵件，我們將向您發送一次性登入連結。",
+        "magicLinkEmailLabel": "電子郵件地址",
+        "magicLinkEmailPlaceholder": "you@example.com",
+        "magicLinkSubmit": "傳送登入連結",
+        "magicLinkSent": "若該電子郵件存在帳號，登入連結已發送。請查收您的收件匣。",
+        "magicLinkUnavailable": "此伺服器不支援電子郵件登入。",
+        "magicLinkNetworkError": "無法連線到伺服器：{{message}}"
     },
     "storage": {
         "title": "儲存空間",
@@ -677,6 +719,18 @@
         "minutes_ago": "{{n}}分鐘前",
         "hours_ago": "{{n}}小時前",
         "days_ago": "{{n}}天前",
+        "edit_profile": "編輯個人資料",
+        "edit_oidc_managed": "要更改您的資訊(姓名、名字、頭像等),請前往您的身分提供者更新。變更將在您下次登入時顯示。",
+        "username_claim_hint": "2-64 個字元,字母 / 數字 / 點 / 短橫線 / 底線。一旦選定,使用者名稱將無法更改(DAV/NextCloud 用戶端依賴它)。",
+        "username_already_claimed": "使用者名稱已設定,不可更改(DAV/NextCloud 用戶端依賴它)。",
+        "given_name": "名",
+        "family_name": "姓",
+        "save_profile": "儲存變更",
+        "profile_saved": "個人資料已更新",
+        "profile_no_changes": "沒有變更可儲存。",
+        "profile_save_failed": "儲存失敗",
+        "username_taken_error": "該使用者名稱已被使用。",
+        "username_immutable_error": "您的使用者名稱已設定,無法在此更改。如需重新命名,請聯絡管理員。",
         "change_password": "修改密碼",
         "current_password": "當前密碼",
         "new_password": "新密碼",

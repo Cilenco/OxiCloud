@@ -1,4 +1,37 @@
 {
+    "server": {
+        "magic_link": {
+            "page": {
+                "expired_title": "Ten link logowania nie jest już ważny",
+                "expired_body": "Link mógł wygasnąć lub został już użyty. Możemy wysłać Ci nowy — dotrze do Twojej skrzynki odbiorczej w ciągu kilku sekund.",
+                "resend_to": "Wyślij nowy link do {{email}}",
+                "generic_unavailable": "Ten link logowania nie jest już ważny. Mógł zostać już użyty lub wygasł. Poproś o nowy link na stronie logowania.",
+                "service_unavailable": "Logowanie magic link nie jest włączone na tym serwerze.",
+                "internal_error": "Coś poszło nie tak podczas logowania. Spróbuj ponownie.",
+                "resend_failure": "Coś poszło nie tak podczas wysyłania linku. Spróbuj ponownie.",
+                "cross_browser_title": "Kontynuować logowanie na tym urządzeniu?",
+                "cross_browser_body": "Otworzyłeś ten link logowania w innej przeglądarce lub urządzeniu niż to, z którego został zażądany.",
+                "cross_browser_warning": "Jeśli to Ty zażądałeś tego linku, możesz bezpiecznie kontynuować. W przeciwnym razie zamknij tę stronę — kliknięcie Kontynuuj zaloguje kogoś innego na Twoje konto.",
+                "cross_browser_continue": "Kontynuuj i zaloguj się",
+                "resend_confirmation_title": "Sprawdź swoją skrzynkę",
+                "resend_confirmation_body": "Jeśli link logowania należał do aktywnego konta, nowy link właśnie został wysłany. Sprawdź swoją skrzynkę.",
+                "return_link": "Powrót do OxiCloud"
+            },
+            "email": {
+                "invitation": {
+                    "subject": "{{inviter}} udostępnił Ci {{kind}} w OxiCloud",
+                    "body": "{{inviter}} udostępnił Ci {{kind}} w OxiCloud.\n\nOtwórz, klikając poniższy link:\n{{link}}\n\nLink działa raz i wygasa za {{ttl_hours}} godzin.\nJeśli nie spodziewałeś się tego zaproszenia, możesz zignorować tę wiadomość.\n\n— OxiCloud"
+                },
+                "login": {
+                    "subject": "Zaloguj się do OxiCloud",
+                    "body": "Cześć,\n\nUżyj poniższego linku, aby zalogować się do OxiCloud. Link działa raz i wygasa za {{ttl_minutes}} minut. Otwórz go na tym samym urządzeniu, z którego został zażądany.\n\n{{link}}\n\nJeśli nie żądałeś tego linku logowania, możesz zignorować tę wiadomość — nie jest wymagane żadne dalsze działanie.\n\n— OxiCloud"
+                },
+                "kind_file": "plik",
+                "kind_folder": "folder",
+                "english_fallback_divider": "--- Wersja angielska poniżej ---"
+            }
+        }
+    },
     "app": {
         "title": "OxiCloud",
         "description": "Minimalistyczny cloud storage"
@@ -381,6 +414,8 @@
         "login_title": "Zaloguj się",
         "username": "Nazwa użytkownika",
         "username_placeholder": "Wprowadź nazwę użytkownika",
+        "login_identifier": "Nazwa użytkownika lub e-mail",
+        "login_identifier_placeholder": "Wpisz nazwę użytkownika lub e-mail",
         "password": "Hasło",
         "password_placeholder": "Wprowadź hasło",
         "login_button": "Zaloguj się",
@@ -411,7 +446,14 @@
         "admin_create_error": "Błąd podczas tworzenia konta administratora",
         "or": "lub",
         "sso_login": "Zaloguj się przez SSO",
-        "sso_login_provider": "Zaloguj się przez {{provider}}"
+        "sso_login_provider": "Zaloguj się przez {{provider}}",
+        "magicLinkHint": "Brak hasła? Wpisz swój adres e-mail, a wyślemy Ci jednorazowy link do logowania.",
+        "magicLinkEmailLabel": "Adres e-mail",
+        "magicLinkEmailPlaceholder": "ty@przyklad.pl",
+        "magicLinkSubmit": "Wyślij link do logowania",
+        "magicLinkSent": "Jeśli konto dla tego adresu istnieje, link do logowania został wysłany. Sprawdź swoją skrzynkę odbiorczą.",
+        "magicLinkUnavailable": "Logowanie e-mailem nie jest dostępne na tym serwerze.",
+        "magicLinkNetworkError": "Nie udało się połączyć z serwerem: {{message}}"
     },
     "storage": {
         "title": "Pamięć masowa",
@@ -694,6 +736,18 @@
         "minutes_ago": "{{n}} min temu",
         "hours_ago": "{{n}} godz. temu",
         "days_ago": "{{n}} dni temu",
+        "edit_profile": "Edytuj profil",
+        "edit_oidc_managed": "Aby zmienić swoje dane (nazwisko, imię, zdjęcie profilowe, …), zaktualizuj je u swojego dostawcy tożsamości. Twoje zmiany pojawią się przy następnym logowaniu.",
+        "username_claim_hint": "2–64 znaki, litery / cyfry / kropka / myślnik / podkreślenie. Po wybraniu nazwy użytkownika nie można jej zmienić (klienty DAV/NextCloud są od niej zależne).",
+        "username_already_claimed": "Nazwa użytkownika jest ustawiona i nie może być zmieniona (klienty DAV/NextCloud są od niej zależne).",
+        "given_name": "Imię",
+        "family_name": "Nazwisko",
+        "save_profile": "Zapisz zmiany",
+        "profile_saved": "Profil zaktualizowany",
+        "profile_no_changes": "Brak zmian do zapisania.",
+        "profile_save_failed": "Zapis nie powiódł się",
+        "username_taken_error": "Ta nazwa użytkownika jest już zajęta.",
+        "username_immutable_error": "Twoja nazwa użytkownika jest już ustawiona i nie można jej tutaj zmienić. Skontaktuj się z administratorem, jeśli chcesz ją zmienić.",
         "change_password": "Zmień hasło",
         "current_password": "Bieżące hasło",
         "new_password": "Nowe hasło",

@@ -39,7 +39,18 @@ pub trait AuthorizationEngine: Send + Sync + 'static {
         resource: Resource,
     ) -> Result<(), DomainError> {
         if self.check(subject, permission, resource).await? {
+            // Granted path: high-traffic (every authorized request hits
+            // this), so kept at `debug` and structured for grep-friendly
+            // filtering. Not an audit event — the audit trail focuses
+            // on denials and explicit mutations elsewhere.
             tracing::debug!(
+                target: "oxicloud::authz",
+                event = "authz.allowed",
+                subject_type = subject.type_str(),
+                subject_id = %subject.id(),
+                permission = permission.as_str(),
+                resource_type = resource.type_str(),
+                resource_id = %resource.id(),
                 "👮🏻‍♂️ perms: ✔ Subject '{}' has permission to '{}' on resource '{}'",
                 subject,
                 permission,
@@ -51,8 +62,23 @@ pub trait AuthorizationEngine: Send + Sync + 'static {
                 Resource::Folder(id) => ("Folder", id),
                 Resource::File(id) => ("File", id),
             };
-            // log it for audit
+            // Audit-worthy: denials are the interesting signal. Routed
+            // through the `audit` tracing target so log aggregators can
+            // surface them separately from operational debug traffic.
+            // Span context (request_id, client_ip, user_id) is attached
+            // automatically by the request-scope span set in
+            // `interfaces/middleware/trace_span.rs`, so this log line
+            // doesn't need to duplicate those fields — they appear in
+            // the structured output of every log written inside the
+            // request span.
             tracing::info!(
+                target: "audit",
+                event = "authz.denied",
+                subject_type = subject.type_str(),
+                subject_id = %subject.id(),
+                permission = permission.as_str(),
+                resource_type = resource.type_str(),
+                resource_id = %resource.id(),
                 "👮🏻‍♂️ perms: ⛔ Subject '{}' hasn't permission to '{}' on resource '{}'",
                 subject,
                 permission,

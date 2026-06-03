@@ -24,6 +24,7 @@ import { inlineViewer } from '../features/files/inlineViewer.js';
 import { favorites } from '../features/library/favorites.js';
 import { fetchResourcesPage, rebuildBreadCrumb } from '../model/filesModel.js';
 import { grants } from '../model/grants.js';
+import { attachInfiniteScroll } from '../utils/infiniteScroll.js';
 import { resolveHomeFolder } from './authSession.js';
 import { updateHistory } from './main.js';
 import { app } from './state.js';
@@ -289,6 +290,8 @@ function _ensureLoadMoreButton() {
 
     wrapper.appendChild(btn);
     filesContainer.after(wrapper);
+
+    attachInfiniteScroll(wrapper, () => _loadPage({ isFirstPage: false }));
 }
 
 /**
@@ -404,6 +407,17 @@ async function loadFiles(options = { insertHistory: true }) {
 
     try {
         if (!app.userHomeFolderId) await resolveHomeFolder();
+
+        // External users have no home folder. If they land on /files
+        // without a specific folder id in the URL, redirect them to
+        // /#/sharedwithme — their actual landing page. This guards
+        // against `fetchResourcesPage('')` building `/api/folders//resources`.
+        if (app.isExternalUser && (!app.currentPath || app.currentPath === '')) {
+            clearTimeout(spinnerTimeout);
+            _loading = false;
+            window.location.hash = '#/sharedwithme';
+            return;
+        }
 
         // Resolve path to home folder when none is set
         if (!app.currentPath || app.currentPath === '') {

@@ -23,16 +23,33 @@ use crate::domain::entities::subject_group::{
 use crate::domain::repositories::subject_group_repository::{
     SubjectGroupRepository, SubjectGroupRepositoryError,
 };
-use crate::infrastructure::repositories::pg::SubjectGroupPgRepository;
+use crate::domain::repositories::user_repository::{UserRepository, UserRepositoryError};
+use crate::infrastructure::repositories::pg::{SubjectGroupPgRepository, UserPgRepository};
 
 pub struct SubjectGroupService {
     repo: Arc<SubjectGroupPgRepository>,
     pool: Arc<PgPool>,
+    /// Looked up by `add_member` to refuse external-user candidates.
+    /// External users are grant-only recipients; placing them in a
+    /// subject group would let any later group-grant on internal
+    /// resources silently leak access to them. `UserPgRepository` rather
+    /// than `Arc<dyn UserStoragePort>` because the port's `async fn`s
+    /// make it not dyn-compatible (matches the convention used by other
+    /// services in this layer).
+    user_storage: Arc<UserPgRepository>,
 }
 
 impl SubjectGroupService {
-    pub fn new(repo: Arc<SubjectGroupPgRepository>, pool: Arc<PgPool>) -> Self {
-        Self { repo, pool }
+    pub fn new(
+        repo: Arc<SubjectGroupPgRepository>,
+        pool: Arc<PgPool>,
+        user_storage: Arc<UserPgRepository>,
+    ) -> Self {
+        Self {
+            repo,
+            pool,
+            user_storage,
+        }
     }
 
     /// Create a new group. Validates the name (RFC 5321 local-part shape)
@@ -249,6 +266,39 @@ impl SubjectGroupService {
             ));
         }
 
+        // Refuse external-user candidates. External users are grant-only
+        // recipients; placing one in a subject group would let any later
+        // group-grant on an internal resource silently leak access.
+        // Mirrors the no-external-admins enforcement style in
+        // `User::new(..., is_external = true)`.
+        if let GroupMember::User(uid) = member {
+            match UserRepository::get_user_by_id(&*self.user_storage, uid).await {
+                Ok(user) if user.is_external() => {
+                    tracing::info!(
+                        target: "audit",
+                        event = "group.external_member_rejected",
+                        group_id = %group_id,
+                        user_id = %uid,
+                        by = %caller_id,
+                    );
+                    return Err(DomainError::new(
+                        ErrorKind::AccessDenied,
+                        "SubjectGroup",
+                        "External users cannot be members of subject groups; share resources with them directly".to_string(),
+                    ));
+                }
+                Ok(_) => { /* internal user — proceed */ }
+                Err(UserRepositoryError::NotFound(_)) => {
+                    return Err(DomainError::new(
+                        ErrorKind::NotFound,
+                        "SubjectGroup",
+                        format!("user {} not found", uid),
+                    ));
+                }
+                Err(e) => return Err(DomainError::from(e)),
+            }
+        }
+
         self.repo
             .add_member(group_id, member, caller_id)
             .await
@@ -409,7 +459,8 @@ mod integration_tests {
         ensure_clean_test_db(&pool).await;
         let pool = Arc::new(pool);
         let repo = Arc::new(SubjectGroupPgRepository::new(pool.clone()));
-        SubjectGroupService::new(repo, pool)
+        let user_storage = Arc::new(UserPgRepository::new(pool.clone()));
+        SubjectGroupService::new(repo, pool, user_storage)
     }
 
     async fn first_admin(pool: &sqlx::PgPool) -> Uuid {
@@ -518,6 +569,61 @@ mod integration_tests {
         .await
         .unwrap();
         assert_eq!(post, 0, "grants must be revoked atomically with the group");
+    }
+
+    // ── External users cannot be added as subject group members ─────────────
+    //
+    // Defense-in-depth gap #1 closed in PR 6: external users (grant-only
+    // recipients) must never appear inside a subject group, because the
+    // group could later be granted access to internal resources.
+    #[tokio::test]
+    async fn test_external_user_cannot_be_added_as_member() {
+        let svc = make_service().await;
+        let admin = first_admin(&svc.pool).await;
+
+        // Insert an external user directly (no public test helper for this yet).
+        let external_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO auth.users (
+                 id, username, email, password_hash, role,
+                 storage_quota_bytes, storage_used_bytes,
+                 created_at, updated_at, active, is_external
+             ) VALUES ($1, NULL, $2, NULL, 'user'::auth.userrole,
+                       0, 0, NOW(), NOW(), TRUE, TRUE)",
+        )
+        .bind(external_id)
+        .bind(format!("ext-{}@example.com", &external_id.to_string()[..8]))
+        .execute(svc.pool.as_ref())
+        .await
+        .expect("seed external user");
+
+        let group = svc
+            .create(&rand_name("ext-reject"), None, admin)
+            .await
+            .unwrap();
+
+        let err = svc
+            .add_member(group.id, GroupMember::User(external_id), admin)
+            .await
+            .expect_err("external user must be rejected as a group member");
+        assert_eq!(err.kind, ErrorKind::AccessDenied);
+        assert!(
+            err.message.contains("External users"),
+            "error message should explain the rejection; got: {}",
+            err.message
+        );
+
+        // Verify the membership did NOT land in the table.
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM auth.subject_group_members
+              WHERE group_id = $1 AND member_user_id = $2",
+        )
+        .bind(group.id)
+        .bind(external_id)
+        .fetch_one(svc.pool.as_ref())
+        .await
+        .unwrap();
+        assert_eq!(count, 0, "external user must not appear in members table");
     }
 
     // Bonus: service-layer name validation runs before the DB round-trip.

@@ -22,7 +22,8 @@ use crate::application::dtos::cursor::PageCursor;
 use crate::application::dtos::grant_dto::{
     CreateGrantDto, GrantDto, MySharesDto, OutgoingResourceGrantDto, OutgoingResourceItemDto,
     PermissionDto, ResourceContentDto, ResourceDto, ResourceTypeDto, SharedWithMeDto,
-    SharedWithMeItemDto, SharedWithMeQuery, SubjectDto, UpdateRoleDto, role_from_permissions,
+    SharedWithMeItemDto, SharedWithMeQuery, SubjectDto, SubjectInputDto, UpdateRoleDto,
+    role_from_permissions,
 };
 use crate::application::ports::authorization_ports::AuthorizationEngine;
 use crate::application::ports::file_ports::FileRetrievalUseCase;
@@ -86,7 +87,6 @@ pub async fn create_grant(
         }
     };
 
-    let subject: Subject = dto.subject.into();
     let resource: Resource = dto.resource.into();
     let expires_at = dto.expires_at;
 
@@ -97,6 +97,59 @@ pub async fn create_grant(
     {
         return AppError::from(e).into_response();
     }
+
+    // Resolve the subject. For the email variant this lazily provisions
+    // an external user (or reuses an existing match) and remembers the
+    // resolved User so the invitation email can be sent after the grant
+    // rows land.
+    let (subject, invite_recipient) = match dto.subject {
+        SubjectInputDto::User { id } => (Subject::User(id), None),
+        SubjectInputDto::Group { id } => (Subject::Group(id), None),
+        SubjectInputDto::Token { id } => (Subject::Token(id), None),
+        SubjectInputDto::Email { email } => {
+            let Some(invite_svc) = state.magic_link_invite_service.as_ref() else {
+                return AppError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Magic-link invitations are not configured on this server \
+                     (set OXICLOUD_SMTP_HOST in .env to enable)",
+                    "ServiceUnavailable",
+                )
+                .into_response();
+            };
+            // PR 12 — per-sharer ceiling: 50 email-invitations / hour
+            // per caller. Hitting the cap returns 429 because the
+            // caller is authenticated and rate-limit visibility leaks
+            // nothing they don't already know about their own
+            // behaviour.
+            if state
+                .email_invite_rate_limiter
+                .check_and_increment(&caller_id.to_string())
+                .is_err()
+            {
+                tracing::warn!(
+                    target: "audit",
+                    event = "grants.email_invite",
+                    reason = "rate_limited",
+                    caller_id = %caller_id,
+                    "Per-sharer email-invite rate limit exceeded"
+                );
+                return crate::interfaces::middleware::rate_limit::too_many_requests(
+                    state.email_invite_rate_limiter.retry_after(),
+                );
+            }
+            // PR C: pass the inviter id so resolve_or_create_recipient
+            // can inherit their preferred_locale onto a freshly-
+            // provisioned external user (best-effort; lookup failure
+            // just leaves the new row's locale NULL, no hard error).
+            match invite_svc
+                .resolve_or_create_recipient(&email, Some(caller_id))
+                .await
+            {
+                Ok(user) => (Subject::User(user.id()), Some(user)),
+                Err(e) => return AppError::from(e).into_response(),
+            }
+        }
+    };
 
     let mut results: Vec<GrantDto> = Vec::with_capacity(permissions.len());
     for perm in permissions {
@@ -118,6 +171,28 @@ pub async fn create_grant(
         resource,
         caller_id
     );
+
+    // Fire the invitation email AFTER the grant rows are in place so a
+    // failed SMTP send can't leave the recipient with mail-but-no-access.
+    // The service swallows SMTP errors (logs only) — the API response
+    // stays 201 Created either way, matching the plan's "201 always
+    // when grants land; mail is best-effort" contract.
+    if let Some(recipient) = invite_recipient
+        && let Some(invite_svc) = state.magic_link_invite_service.as_ref()
+    {
+        let inviter_name = auth_user.username.clone();
+        if let Err(e) = invite_svc
+            .issue_invitation(&recipient, &inviter_name, resource)
+            .await
+        {
+            warn!(
+                "invitation issuance failed for {} (grants already created): {}",
+                recipient.email(),
+                e
+            );
+        }
+    }
+
     (StatusCode::CREATED, Json(results)).into_response()
 }
 

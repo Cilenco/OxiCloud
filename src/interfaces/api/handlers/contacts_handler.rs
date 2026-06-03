@@ -182,14 +182,27 @@ fn if_match_passes(if_match: Option<&str>, stored_etag: &str) -> bool {
 
 /// Map a `UserDto` to a `ContactDto` so OxiCloud users appear as contacts
 /// inside the virtual system address book.
+///
+/// `given_name`/`family_name` come from OIDC standard claims at JIT
+/// provisioning (or NULL for password-only or pre-OIDC users). When
+/// they're present, prefer a "First Last" full name; otherwise fall
+/// back to the username (which is always present).
 fn user_to_contact(user: UserDto) -> ContactDto {
+    // Display fallback chain: given+family name → username → email.
+    // Username is `Option<String>` post PR 16; externals start with None.
+    let full_name = match (user.given_name.as_deref(), user.family_name.as_deref()) {
+        (Some(g), Some(f)) => format!("{g} {f}"),
+        (Some(g), None) => g.to_string(),
+        (None, Some(f)) => f.to_string(),
+        (None, None) => user.username.clone().unwrap_or_else(|| user.email.clone()),
+    };
     ContactDto {
         id: user.id.clone(),
         address_book_id: SYSTEM_BOOK_ID.to_string(),
         uid: format!("{}@oxicloud", user.id),
-        full_name: Some(user.username.clone()),
-        first_name: None,
-        last_name: None,
+        full_name: Some(full_name),
+        first_name: user.given_name.clone(),
+        last_name: user.family_name.clone(),
         nickname: None,
         email: vec![EmailDto {
             email: user.email,
@@ -254,7 +267,22 @@ pub async fn list_address_books(
                 })
                 .collect();
 
-            if state.expose_system_users && state.auth_service.is_some() {
+            // Skip the system address book for external callers so they
+            // don't see an internal-user directory entry (let alone its
+            // contents). The system book is only useful to internal
+            // users picking sharees out of the directory.
+            let hide_system_for_external = match state.auth_service.as_ref() {
+                Some(svc) => {
+                    crate::interfaces::middleware::user::require_internal_user(svc, auth_user.id)
+                        .await
+                        .is_err()
+                }
+                None => false,
+            };
+            if state.expose_system_users
+                && state.auth_service.is_some()
+                && !hide_system_for_external
+            {
                 let now = Utc::now();
                 response.push(AddressBookResponse {
                     id: SYSTEM_BOOK_ID.to_string(),
@@ -451,6 +479,14 @@ pub async fn list_contacts(
         let Some(auth_service) = &state.auth_service else {
             return system_book_unavailable();
         };
+        // External callers must not enumerate the internal-user
+        // directory through the system address book.
+        if let Err(e) =
+            crate::interfaces::middleware::user::require_internal_user(auth_service, auth_user.id)
+                .await
+        {
+            return e.into_response();
+        }
         let caller_id = auth_user.id.to_string();
         match auth_service.list_users(params.limit, params.offset).await {
             Ok(users) => {
@@ -562,6 +598,12 @@ pub async fn get_contact(
         let Some(auth_service) = &state.auth_service else {
             return system_book_unavailable();
         };
+        if let Err(e) =
+            crate::interfaces::middleware::user::require_internal_user(auth_service, auth_user.id)
+                .await
+        {
+            return e.into_response();
+        }
         let Ok(uuid) = Uuid::parse_str(&contact_id) else {
             return (
                 StatusCode::BAD_REQUEST,

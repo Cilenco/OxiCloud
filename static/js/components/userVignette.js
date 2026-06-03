@@ -90,6 +90,12 @@ function _applyPhoto(avatar, photoUrl, name) {
  *   When true (and showName is true), the primary email address is shown below
  *   the name in a lighter style.  Name and email are wrapped in a
  *   `.user-vignette__info` column.  Has no effect when showName is false.
+ * @property {boolean} [showOrigin=true]
+ *   When true (the default), an `is_external` badge overlays the
+ *   bottom-right of the avatar for external users only — internal
+ *   users render unchanged. Set false to suppress the badge in
+ *   contexts where the distinction would be noise (e.g. the
+ *   logged-in-user menu, where the caller is implicitly internal).
  */
 
 /**
@@ -101,7 +107,7 @@ function _applyPhoto(avatar, photoUrl, name) {
  * @param {VignetteOptions} [options]
  * @returns {HTMLElement}
  */
-export function createUserVignette(userId, size = 'sm', { showName = true, showEmail = false } = {}) {
+export function createUserVignette(userId, size = 'sm', { showName = true, showEmail = false, showOrigin = true } = {}) {
     const colorIdx = _colorIndex(userId);
 
     const wrapper = /** @type {HTMLElement} */ (document.createElement('span'));
@@ -136,18 +142,52 @@ export function createUserVignette(userId, size = 'sm', { showName = true, showE
         }
     }
 
-    // Resolve name, photo, and (when requested) email asynchronously.
-    Promise.all([systemUsers.getDisplayName(userId), systemUsers.getPhoto(userId), emailEl ? systemUsers.getEmail(userId) : Promise.resolve(null)]).then(
-        ([name, photo, email]) => {
-            if (nameEl) nameEl.textContent = name;
-            if (emailEl) emailEl.textContent = email ?? '';
-            if (photo) {
-                _applyPhoto(avatar, photo, name);
+    // Resolve name, photo, email, and (when requested) is_external
+    // asynchronously. All four go through the systemUsers cache so a
+    // single fetch back-fills every facet.
+    //
+    // The origin badge (external-user marker) is created here only
+    // when `isExternal` is true — NOT pre-created hidden — because the
+    // global icon-replacement `MutationObserver` (core/icons.js) swaps
+    // every `<i class="fa-…">` for an `<svg>`, invalidating any
+    // reference we'd otherwise hold across the await. Late-resolve
+    // calls used to toggle `.hidden` on the original `<i>` that no
+    // longer existed in the DOM, leaving the badge invisible until
+    // the next render. Creating-then-appending keeps the icon system
+    // and our reveal step in agreement.
+    Promise.all([
+        systemUsers.getDisplayName(userId),
+        systemUsers.getPhoto(userId),
+        emailEl ? systemUsers.getEmail(userId) : Promise.resolve(null),
+        showOrigin ? systemUsers.getIsExternal(userId) : Promise.resolve(false)
+    ]).then(([name, photo, email, isExternal]) => {
+        if (nameEl) nameEl.textContent = name;
+        if (emailEl) emailEl.textContent = email ?? '';
+        if (photo) {
+            _applyPhoto(avatar, photo, name);
+        } else {
+            avatar.textContent = _initials(name);
+        }
+        if (showOrigin && isExternal) {
+            const badge = document.createElement('i');
+            // In avatar-only mode (no name span), overlay the badge on
+            // the bottom-right corner of the picture — the right-hand
+            // sibling spot doesn't exist there and a row-end position
+            // would visually float in nothing. With a name, keep the
+            // badge as a sibling on the right of the row.
+            const overlay = !showName;
+            badge.className = overlay
+                ? 'user-vignette__origin user-vignette__origin--external user-vignette__origin--overlay fa-solid fa-building-circle-xmark'
+                : 'user-vignette__origin user-vignette__origin--external fa-solid fa-building-circle-xmark';
+            badge.title = 'External user';
+            badge.setAttribute('aria-hidden', 'true');
+            if (overlay) {
+                avatar.appendChild(badge);
             } else {
-                avatar.textContent = _initials(name);
+                wrapper.appendChild(badge);
             }
         }
-    );
+    });
 
     return wrapper;
 }
