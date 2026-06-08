@@ -196,7 +196,11 @@ async fn handle_put_chunk(
         .map_err(|e| AppError::bad_request(format!("Invalid chunk path: {}", e)))?;
 
     let max_chunk = state.core.config.storage.chunk_max_bytes;
-    stream_body_to_path(req.into_body(), &chunk_path, max_chunk).await?;
+    // No client-side integrity contract on the NC chunked surface — the
+    // NC desktop client validates the assembled-file ETag against the
+    // server-side `oc:checksums` after MOVE. So we skip per-chunk
+    // hashing here (peak heap stays at ~one HTTP frame).
+    stream_body_to_path(req.into_body(), &chunk_path, max_chunk, None).await?;
 
     Ok(Response::builder()
         .status(StatusCode::CREATED)

@@ -463,6 +463,191 @@ impl ChunkedUploadService {
         })
     }
 
+    /// Prepare a chunk write — validates session ownership and chunk
+    /// index, returns the on-disk path the caller should stream the
+    /// HTTP body to plus the expected byte count for that chunk.
+    ///
+    /// Used by the streaming REST PUT path: the handler calls
+    /// `prepare_chunk` → streams body to disk via
+    /// `interfaces::upload_spool::stream_body_to_path` → calls
+    /// `commit_chunk` to finalise. This lets the body bypass the
+    /// in-memory `Bytes` allocation entirely (peak heap ~one HTTP
+    /// frame instead of "chunk size").
+    ///
+    /// Returns `Err` if the session is unknown, owned by another user,
+    /// the chunk index is out of range, or the chunk is already complete.
+    pub async fn prepare_chunk(
+        &self,
+        upload_id: &str,
+        user_id: Uuid,
+        chunk_index: usize,
+    ) -> Result<(PathBuf, usize), DomainError> {
+        self.verify_session_owner(upload_id, &user_id.to_string())
+            .map_err(|e| DomainError::new(ErrorKind::NotFound, "ChunkedUpload", e))?;
+
+        let session = self.sessions.get(upload_id).ok_or_else(|| {
+            DomainError::new(
+                ErrorKind::NotFound,
+                "ChunkedUpload",
+                format!("Upload session not found: {}", upload_id),
+            )
+        })?;
+
+        if chunk_index >= session.chunks.len() {
+            return Err(DomainError::new(
+                ErrorKind::InvalidInput,
+                "ChunkedUpload",
+                format!(
+                    "Invalid chunk index: {} (max: {})",
+                    chunk_index,
+                    session.chunks.len() - 1
+                ),
+            ));
+        }
+
+        let chunk = &session.chunks[chunk_index];
+        if chunk.status == ChunkStatus::Complete {
+            return Err(DomainError::new(
+                ErrorKind::InvalidInput,
+                "ChunkedUpload",
+                format!("Chunk {} already uploaded", chunk_index),
+            ));
+        }
+
+        Ok((
+            session.temp_dir.join(format!("chunk_{:06}", chunk_index)),
+            chunk.size,
+        ))
+    }
+
+    /// Finalise a chunk write — verifies the actually-written byte count
+    /// matches the chunk's declared size, validates an optional
+    /// algorithm-tagged checksum, and updates session state. The chunk
+    /// file at `{session.temp_dir}/chunk_{index:06}` must already have
+    /// been written by the caller (typically via
+    /// `stream_body_to_path`).
+    ///
+    /// `actual_size` is the byte count the streaming write reported;
+    /// `computed_checksum` is the hex digest computed during streaming
+    /// (or `None` if the client didn't request a checksum). When
+    /// `expected_checksum` is supplied the two are compared; a
+    /// mismatch removes the partial file and returns `ValidationError`
+    /// so a client retry against the same chunk index gets a clean
+    /// slot. A size mismatch does the same.
+    pub async fn commit_chunk(
+        &self,
+        upload_id: &str,
+        user_id: Uuid,
+        chunk_index: usize,
+        actual_size: u64,
+        computed_checksum: Option<String>,
+        expected_checksum: Option<String>,
+    ) -> Result<ChunkUploadResponseDto, DomainError> {
+        self.verify_session_owner(upload_id, &user_id.to_string())
+            .map_err(|e| DomainError::new(ErrorKind::NotFound, "ChunkedUpload", e))?;
+
+        // Re-fetch chunk metadata under fresh lock — guards against the
+        // (vanishingly unlikely) case of a session expiry / cancellation
+        // racing with the write.
+        let (chunk_path, expected_size, persist_path) = {
+            let session = self.sessions.get(upload_id).ok_or_else(|| {
+                DomainError::new(
+                    ErrorKind::NotFound,
+                    "ChunkedUpload",
+                    "Session disappeared".to_string(),
+                )
+            })?;
+            if chunk_index >= session.chunks.len() {
+                return Err(DomainError::new(
+                    ErrorKind::InvalidInput,
+                    "ChunkedUpload",
+                    format!("Invalid chunk index: {}", chunk_index),
+                ));
+            }
+            (
+                session.temp_dir.join(format!("chunk_{:06}", chunk_index)),
+                session.chunks[chunk_index].size,
+                session.temp_dir.join(PROGRESS_FILE),
+            )
+        };
+
+        // Size check — the streaming body may have been truncated by
+        // the client mid-flight or exceeded the chunk's declared
+        // length. Either way we don't want a partial chunk to count
+        // as complete; nuke it and ask the client to retry.
+        if actual_size != expected_size as u64 {
+            let _ = fs::remove_file(&chunk_path).await;
+            return Err(DomainError::new(
+                ErrorKind::InvalidInput,
+                "ChunkedUpload",
+                format!(
+                    "Invalid chunk size: expected {} bytes, got {} bytes",
+                    expected_size, actual_size
+                ),
+            ));
+        }
+
+        // Checksum check — case-insensitive compare so clients that
+        // send uppercase hex still match.
+        if let Some(expected) = expected_checksum.as_ref()
+            && let Some(actual) = computed_checksum.as_ref()
+            && !expected.eq_ignore_ascii_case(actual)
+        {
+            let _ = fs::remove_file(&chunk_path).await;
+            return Err(DomainError::new(
+                ErrorKind::InvalidInput,
+                "ChunkedUpload",
+                format!(
+                    "Checksum mismatch: expected {}, got {}",
+                    expected, actual
+                ),
+            ));
+        }
+
+        // Update session state — DashMap shard lock held only for the
+        // RAM updates (~µs). The bitmask write happens AFTER the ref
+        // is dropped so concurrent uploads to other sessions are never
+        // blocked. Mirrors the legacy `upload_chunk_inner` semantics.
+        let (bytes_received, progress, is_complete, persist_bitmask) = {
+            let mut session = self.sessions.get_mut(upload_id).ok_or_else(|| {
+                DomainError::new(
+                    ErrorKind::NotFound,
+                    "ChunkedUpload",
+                    "Session disappeared".to_string(),
+                )
+            })?;
+            session.chunks[chunk_index].status = ChunkStatus::Complete;
+            session.chunks[chunk_index].checksum = expected_checksum;
+            session.bytes_received += actual_size;
+            session.last_activity = Utc::now();
+            let bitmask = session.build_progress_bitmask();
+            (
+                session.bytes_received,
+                session.progress(),
+                session.is_complete(),
+                bitmask,
+            )
+        };
+
+        if let Err(e) = fs::write(&persist_path, &persist_bitmask).await {
+            tracing::warn!("Failed to persist progress for {upload_id}: {e}");
+        }
+
+        tracing::debug!(
+            "📦 Chunk {} committed for {} ({:.1}% complete)",
+            chunk_index,
+            upload_id,
+            progress * 100.0
+        );
+
+        Ok(ChunkUploadResponseDto {
+            chunk_index,
+            bytes_received,
+            progress,
+            is_complete,
+        })
+    }
+
     /// Upload a single chunk (persists `progress.bin` after success)
     async fn upload_chunk_inner(
         &self,

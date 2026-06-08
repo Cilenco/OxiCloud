@@ -109,7 +109,7 @@ Authorization: Bearer {{token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$[?(@.id == '{{file_id}}')].content_hash" includes "b2208c5dc33ff951227bd0c139f5eccb04105d6da6a7519ee23f7bc00a17bb5a"
+jsonpath "$[?(@.id == '{{file_id}}')].content_hash" == "b2208c5dc33ff951227bd0c139f5eccb04105d6da6a7519ee23f7bc00a17bb5a"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -154,6 +154,213 @@ HTTP 413
 # Step 9 — Clean up the abandoned over-cap session.
 # ─────────────────────────────────────────────────────────────
 DELETE {{base_url}}/api/uploads/{{upload_id_big}}
+Authorization: Bearer {{token}}
+
+HTTP 204
+
+
+# ═════════════════════════════════════════════════════════════
+# Checksum verification scenarios
+# ═════════════════════════════════════════════════════════════
+# `?checksum=<hex>&checksumalg=<name>` (default md5 if alg
+# omitted, preserving the legacy `Content-MD5` contract). All
+# three algorithms compute incrementally during the streaming
+# write — zero extra disk reads. Known hashes of hello.txt:
+#   md5:    f02bc35b153756ad11e07885cd86cbcf
+#   sha256: 0237134783df857fd9634c004341dbfccd374be0a1dd3c08e257522fa4d44e20
+#   blake3: b2208c5dc33ff951227bd0c139f5eccb04105d6da6a7519ee23f7bc00a17bb5a
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 10 — MD5 (default alg, no `checksumalg` param).
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/uploads
+Authorization: Bearer {{token}}
+Content-Type: application/json
+{
+  "filename": "chunked-cap-md5.txt",
+  "folder_id": "{{home_folder_id}}",
+  "content_type": "text/plain",
+  "total_size": 32,
+  "chunk_size": 1048576
+}
+
+HTTP 201
+[Captures]
+upload_id_md5: jsonpath "$.upload_id"
+
+PATCH {{base_url}}/api/uploads/{{upload_id_md5}}?chunk_index=0&checksum=f02bc35b153756ad11e07885cd86cbcf
+Authorization: Bearer {{token}}
+Content-Type: application/octet-stream
+file,fixtures/hello.txt;
+
+HTTP 200
+
+POST {{base_url}}/api/uploads/{{upload_id_md5}}/complete
+Authorization: Bearer {{token}}
+
+HTTP 201
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 11 — SHA-256 (`?checksumalg=sha256`).
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/uploads
+Authorization: Bearer {{token}}
+Content-Type: application/json
+{
+  "filename": "chunked-cap-sha256.txt",
+  "folder_id": "{{home_folder_id}}",
+  "content_type": "text/plain",
+  "total_size": 32,
+  "chunk_size": 1048576
+}
+
+HTTP 201
+[Captures]
+upload_id_sha: jsonpath "$.upload_id"
+
+PATCH {{base_url}}/api/uploads/{{upload_id_sha}}?chunk_index=0&checksum=0237134783df857fd9634c004341dbfccd374be0a1dd3c08e257522fa4d44e20&checksumalg=sha256
+Authorization: Bearer {{token}}
+Content-Type: application/octet-stream
+file,fixtures/hello.txt;
+
+HTTP 200
+
+POST {{base_url}}/api/uploads/{{upload_id_sha}}/complete
+Authorization: Bearer {{token}}
+
+HTTP 201
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 12 — BLAKE3 (`?checksumalg=blake3`). Same algorithm the
+#           blob-storage layer uses for dedup, so the chunk-level
+#           hash and the assembled-file hash are comparable.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/uploads
+Authorization: Bearer {{token}}
+Content-Type: application/json
+{
+  "filename": "chunked-cap-blake3.txt",
+  "folder_id": "{{home_folder_id}}",
+  "content_type": "text/plain",
+  "total_size": 32,
+  "chunk_size": 1048576
+}
+
+HTTP 201
+[Captures]
+upload_id_blake3: jsonpath "$.upload_id"
+
+PATCH {{base_url}}/api/uploads/{{upload_id_blake3}}?chunk_index=0&checksum=b2208c5dc33ff951227bd0c139f5eccb04105d6da6a7519ee23f7bc00a17bb5a&checksumalg=blake3
+Authorization: Bearer {{token}}
+Content-Type: application/octet-stream
+file,fixtures/hello.txt;
+
+HTTP 200
+
+POST {{base_url}}/api/uploads/{{upload_id_blake3}}/complete
+Authorization: Bearer {{token}}
+
+HTTP 201
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 13 — Checksum MISMATCH: send a chunk with a deliberately
+#           wrong MD5. `commit_chunk` must reject (the chunk
+#           file is removed in the same path so a retry against
+#           the same index starts clean).
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/uploads
+Authorization: Bearer {{token}}
+Content-Type: application/json
+{
+  "filename": "chunked-cap-badmd5.txt",
+  "folder_id": "{{home_folder_id}}",
+  "content_type": "text/plain",
+  "total_size": 32,
+  "chunk_size": 1048576
+}
+
+HTTP 201
+[Captures]
+upload_id_bad: jsonpath "$.upload_id"
+
+PATCH {{base_url}}/api/uploads/{{upload_id_bad}}?chunk_index=0&checksum=00000000000000000000000000000000
+Authorization: Bearer {{token}}
+Content-Type: application/octet-stream
+file,fixtures/hello.txt;
+
+HTTP 400
+
+DELETE {{base_url}}/api/uploads/{{upload_id_bad}}
+Authorization: Bearer {{token}}
+
+HTTP 204
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 14 — Unknown checksumalg → 400 BadRequest with the
+#           offending value echoed back. Guards against a typo
+#           silently disabling integrity verification.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/uploads
+Authorization: Bearer {{token}}
+Content-Type: application/json
+{
+  "filename": "chunked-cap-badalg.txt",
+  "folder_id": "{{home_folder_id}}",
+  "content_type": "text/plain",
+  "total_size": 32,
+  "chunk_size": 1048576
+}
+
+HTTP 201
+[Captures]
+upload_id_badalg: jsonpath "$.upload_id"
+
+PATCH {{base_url}}/api/uploads/{{upload_id_badalg}}?chunk_index=0&checksum=deadbeef&checksumalg=zoiberg
+Authorization: Bearer {{token}}
+Content-Type: application/octet-stream
+file,fixtures/hello.txt;
+
+HTTP 400
+
+DELETE {{base_url}}/api/uploads/{{upload_id_badalg}}
+Authorization: Bearer {{token}}
+
+HTTP 204
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 15 — Size MISMATCH: declare chunk_size 32, send 4 bytes.
+#           Streaming write succeeds; `commit_chunk` rejects on
+#           the size check, removes the partial file.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/uploads
+Authorization: Bearer {{token}}
+Content-Type: application/json
+{
+  "filename": "chunked-cap-shortbody.txt",
+  "folder_id": "{{home_folder_id}}",
+  "content_type": "text/plain",
+  "total_size": 32,
+  "chunk_size": 1048576
+}
+
+HTTP 201
+[Captures]
+upload_id_short: jsonpath "$.upload_id"
+
+PATCH {{base_url}}/api/uploads/{{upload_id_short}}?chunk_index=0
+Authorization: Bearer {{token}}
+Content-Type: application/octet-stream
+base64,aGFsdA==;
+
+HTTP 400
+
+DELETE {{base_url}}/api/uploads/{{upload_id_short}}
 Authorization: Bearer {{token}}
 
 HTTP 204
