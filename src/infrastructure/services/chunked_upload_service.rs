@@ -597,10 +597,7 @@ impl ChunkedUploadService {
             return Err(DomainError::new(
                 ErrorKind::InvalidInput,
                 "ChunkedUpload",
-                format!(
-                    "Checksum mismatch: expected {}, got {}",
-                    expected, actual
-                ),
+                format!("Checksum mismatch: expected {}, got {}", expected, actual),
             ));
         }
 
@@ -908,6 +905,22 @@ impl ChunkedUploadService {
             output
                 .flush()
                 .map_err(|e| format!("Failed to flush assembled file: {e}"))?;
+            // ── Durability boundary ────────────────────────────────────
+            // `flush` drains BufWriter's userspace buffer but leaves the
+            // bytes in the kernel page cache. Without `sync_all`, a
+            // power loss between this `complete_upload` returning 2xx
+            // and the OS writeback timer firing (~5 s default) loses
+            // the merged blob — and PG's metadata row references a hash
+            // that no longer exists on disk. Reclaim the BufWriter's
+            // inner File via `into_inner` so we can `sync_all` it; the
+            // BufWriter would otherwise drop without flushing on the
+            // inner handle.
+            let raw_output = output
+                .into_inner()
+                .map_err(|e| format!("into_inner on BufWriter failed: {e}"))?;
+            raw_output
+                .sync_all()
+                .map_err(|e| format!("Failed to fsync assembled file: {e}"))?;
 
             // Clean up chunk files (keep assembled) — already on a blocking thread
             for (_index, chunk_path) in &chunks_meta {

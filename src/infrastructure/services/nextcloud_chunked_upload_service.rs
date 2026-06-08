@@ -140,6 +140,21 @@ impl NextcloudChunkedUploadService {
         out.flush()
             .await
             .map_err(|e| DomainError::internal_error("ChunkedUpload", e.to_string()))?;
+        // ── Durability boundary ───────────────────────────────────────
+        // `flush()` only drains tokio's userspace buffer; the bytes
+        // still sit in the kernel page cache until the OS writeback
+        // timer fires (~5 s on default Linux). A power loss in that
+        // window would lose acknowledged data — the metadata row
+        // referencing this blob would survive in PG (synchronous_commit
+        // is on), the blob file would not. `sync_all` issues `fsync(2)`
+        // and only returns once the bytes are on the storage medium
+        // (modulo macOS's well-known `F_FULLFSYNC` caveat — `fsync` there
+        // flushes to the disk controller, not the platter). Cost is
+        // ~1–5 ms on SSD, ~5–50 ms on HDD — invisible against the
+        // assembly I/O we already did.
+        out.sync_all()
+            .await
+            .map_err(|e| DomainError::internal_error("ChunkedUpload", e.to_string()))?;
 
         Ok((temp_path, total_size))
     }
