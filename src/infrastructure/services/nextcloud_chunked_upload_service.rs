@@ -93,11 +93,24 @@ impl NextcloudChunkedUploadService {
         Ok(())
     }
 
-    /// Assemble all chunks in numeric order into a temp file.
+    /// Assemble all chunks in numeric order into a temp file, computing
+    /// the BLAKE3 of the concatenated stream **during** the same read/
+    /// write pass (hash-on-write).
     ///
-    /// Returns `(temp_path, total_size)`. The caller is responsible for
-    /// cleaning up the temp file after use.
-    pub async fn assemble(&self, user: &str, upload_id: &str) -> Result<(PathBuf, u64)> {
+    /// Returns `(temp_path, total_size, blake3_hex)`. The caller passes
+    /// the hash to the upload service as `pre_computed_hash` so the
+    /// downstream dedup layer never has to re-read the assembled file
+    /// to compute it — saving one full file-sized read pass per upload.
+    ///
+    /// The read/hash/write loop runs inside `spawn_blocking` because
+    /// BLAKE3 is CPU-bound and would otherwise starve the Tokio worker
+    /// running other connections; synchronous I/O is used inside the
+    /// blocking thread because the workload is sequential and the
+    /// async reactor overhead would only slow it down. For files larger
+    /// than ~10 MB BLAKE3's Rayon mode parallelises across cores —
+    /// mirrors what `ChunkedUploadService::complete_upload_inner` does
+    /// for the REST chunked path.
+    pub async fn assemble(&self, user: &str, upload_id: &str) -> Result<(PathBuf, u64, String)> {
         let session_dir = self.safe_session_dir(user, upload_id)?;
         let mut entries: Vec<String> = Vec::new();
 
@@ -120,43 +133,74 @@ impl NextcloudChunkedUploadService {
         // Sort chunks numerically (Nextcloud sends them as "00001", "00002", ...).
         entries.sort();
 
-        // Stream chunks to a temp file instead of buffering in memory.
         let temp_path = session_dir.join(".assembled");
-        let mut out = fs::File::create(&temp_path)
+        let chunk_paths: Vec<PathBuf> = entries.iter().map(|n| session_dir.join(n)).collect();
+        let assembled_for_blocking = temp_path.clone();
+
+        // Read/hash/write loop runs synchronously on the blocking pool.
+        // BLAKE3 is computed in the same pass that copies bytes from chunk
+        // files into the assembled file — no second read after the fact.
+        let (total_size, hash) =
+            tokio::task::spawn_blocking(move || -> std::io::Result<(u64, String)> {
+                use std::io::{BufWriter as StdBufWriter, Read, Write};
+
+                let raw_output = std::fs::OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .truncate(true)
+                    .open(&assembled_for_blocking)?;
+
+                // 512 KB write buffer — 8× fewer syscalls than 64 KB.
+                let mut output = StdBufWriter::with_capacity(524_288, raw_output);
+                let mut hasher = blake3::Hasher::new();
+                let mut buf = vec![0u8; 524_288];
+                let mut total: u64 = 0;
+
+                // Files >10 MB benefit from BLAKE3's multi-threaded mode.
+                // The threshold matches the REST chunked path's heuristic.
+                const RAYON_THRESHOLD_PER_FRAME: usize = 128 * 1024;
+
+                for chunk_path in &chunk_paths {
+                    let mut chunk_file = std::fs::File::open(chunk_path)?;
+                    loop {
+                        let n = chunk_file.read(&mut buf)?;
+                        if n == 0 {
+                            break;
+                        }
+                        if n >= RAYON_THRESHOLD_PER_FRAME {
+                            hasher.update_rayon(&buf[..n]);
+                        } else {
+                            hasher.update(&buf[..n]);
+                        }
+                        output.write_all(&buf[..n])?;
+                        total += n as u64;
+                    }
+                }
+
+                output.flush()?;
+                // ── Durability boundary ─────────────────────────────────
+                // sync_all is the actual fsync; without it, a power loss
+                // before the kernel writeback timer (~5 s) loses
+                // acknowledged data. Pull the inner File out of the
+                // BufWriter so we can sync the underlying handle —
+                // dropping the BufWriter wouldn't trigger fsync. macOS
+                // caveat: fsync there flushes to the disk controller
+                // only; true durability needs F_FULLFSYNC, not exposed
+                // by std.
+                let raw_output = output
+                    .into_inner()
+                    .map_err(|e| std::io::Error::other(format!("into_inner: {e}")))?;
+                raw_output.sync_all()?;
+
+                Ok((total, hasher.finalize().to_hex().to_string()))
+            })
             .await
+            .map_err(|e| {
+                DomainError::internal_error("ChunkedUpload", format!("assemble task: {e}"))
+            })?
             .map_err(|e| DomainError::internal_error("ChunkedUpload", e.to_string()))?;
 
-        let mut total_size: u64 = 0;
-        for chunk_name in &entries {
-            let mut chunk_file = fs::File::open(session_dir.join(chunk_name))
-                .await
-                .map_err(|e| DomainError::internal_error("ChunkedUpload", e.to_string()))?;
-            let copied = tokio::io::copy(&mut chunk_file, &mut out)
-                .await
-                .map_err(|e| DomainError::internal_error("ChunkedUpload", e.to_string()))?;
-            total_size += copied;
-        }
-
-        out.flush()
-            .await
-            .map_err(|e| DomainError::internal_error("ChunkedUpload", e.to_string()))?;
-        // ── Durability boundary ───────────────────────────────────────
-        // `flush()` only drains tokio's userspace buffer; the bytes
-        // still sit in the kernel page cache until the OS writeback
-        // timer fires (~5 s on default Linux). A power loss in that
-        // window would lose acknowledged data — the metadata row
-        // referencing this blob would survive in PG (synchronous_commit
-        // is on), the blob file would not. `sync_all` issues `fsync(2)`
-        // and only returns once the bytes are on the storage medium
-        // (modulo macOS's well-known `F_FULLFSYNC` caveat — `fsync` there
-        // flushes to the disk controller, not the platter). Cost is
-        // ~1–5 ms on SSD, ~5–50 ms on HDD — invisible against the
-        // assembly I/O we already did.
-        out.sync_all()
-            .await
-            .map_err(|e| DomainError::internal_error("ChunkedUpload", e.to_string()))?;
-
-        Ok((temp_path, total_size))
+        Ok((temp_path, total_size, hash))
     }
 
     /// Delete the upload session directory.
@@ -299,10 +343,16 @@ mod tests {
             .await
             .unwrap();
 
-        let (temp_path, size) = svc.assemble("alice", "upload-002").await.unwrap();
+        let (temp_path, size, hash) = svc.assemble("alice", "upload-002").await.unwrap();
         let assembled = fs::read(&temp_path).await.unwrap();
         assert_eq!(assembled, b"Hello, World!");
         assert_eq!(size, 13);
+        // BLAKE3("Hello, World!") — proves hash-on-write happens during
+        // the assemble pass, not via a re-read.
+        assert_eq!(
+            hash,
+            "288a86a79f20a3d6dccdca7713beaed178798296bdfa7913fa2a62d9727bf8f8"
+        );
     }
 
     #[tokio::test]
@@ -321,10 +371,16 @@ mod tests {
             .await
             .unwrap();
 
-        let (temp_path, size) = svc.assemble("alice", "upload-003").await.unwrap();
+        let (temp_path, size, hash) = svc.assemble("alice", "upload-003").await.unwrap();
         let assembled = fs::read(&temp_path).await.unwrap();
         assert_eq!(assembled, b"ABC");
         assert_eq!(size, 3);
+        // BLAKE3("ABC") — confirms sort happened (chunks were stored in
+        // order 3,1,2 but the hash matches "ABC", not "CAB" or "BAC").
+        assert_eq!(
+            hash,
+            "d1717274597cf0289694f75d96d444b992a096f1afd8e7bbfa6ebb1d360fedfc"
+        );
     }
 
     #[tokio::test]

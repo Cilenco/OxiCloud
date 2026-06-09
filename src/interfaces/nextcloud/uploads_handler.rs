@@ -239,8 +239,12 @@ async fn handle_assemble(
     let dest_subpath = extract_files_subpath(&destination, &user.username)
         .ok_or_else(|| AppError::bad_request("Invalid Destination URL"))?;
 
-    // Assemble chunks into a temp file (no full-file buffering in RAM).
-    let (temp_path, size) = nc
+    // Assemble chunks into a temp file with hash-on-write (BLAKE3 computed
+    // during the same read/write loop that copies chunks into the
+    // assembled file). The hash is passed downstream as `pre_computed_hash`
+    // so the dedup layer never re-reads the assembled file just to compute
+    // it — saves one full file-sized read pass per upload.
+    let (temp_path, size, blake3_hash) = nc
         .chunked_uploads
         .assemble(&user.username, upload_id)
         .await
@@ -249,6 +253,7 @@ async fn handle_assemble(
     // Write assembled file to storage via the upload service.
     let upload_service = &state.applications.file_upload_service;
     let file_service = &state.applications.file_retrieval_service;
+    let folder_service = &state.applications.folder_service;
 
     let internal_path = format!(
         "My Folder - {}/{}",
@@ -271,7 +276,7 @@ async fn handle_assemble(
                 &temp_path,
                 size,
                 &content_type,
-                None,
+                Some(blake3_hash.clone()),
                 oc_mtime,
             )
             .await
@@ -279,11 +284,12 @@ async fn handle_assemble(
 
         Some(dto.etag)
     } else {
-        // For new files we still need to read the temp file since create_file takes &[u8].
-        let assembled = tokio::fs::read(&temp_path).await.map_err(|e| {
-            AppError::internal_error(format!("Failed to read assembled file: {}", e))
-        })?;
-
+        // New-file branch: resolve the parent folder by path and pass the
+        // assembled file's path directly to `upload_file_from_path` so the
+        // bytes never get read back into RAM. Previously this branch did
+        // `tokio::fs::read(&temp_path)` — an extra full file-sized read
+        // pass AND a peak-RAM allocation equal to the upload size, which
+        // defeated the streaming model on large NC uploads.
         let (parent_sub, filename) = match dest_subpath.rsplit_once('/') {
             Some((p, n)) => (p, n),
             None => ("", dest_subpath.as_str()),
@@ -295,8 +301,20 @@ async fn handle_assemble(
         );
         let parent_internal = parent_internal.trim_end_matches('/');
 
+        use crate::application::ports::folder_ports::FolderUseCase;
+        let parent_folder = folder_service
+            .get_folder_by_path(parent_internal)
+            .await
+            .map_err(|e| AppError::internal_error(format!("Parent folder lookup failed: {}", e)))?;
+
         let dto = upload_service
-            .create_file(parent_internal, filename, &assembled, &content_type)
+            .upload_file_from_path(
+                filename.to_string(),
+                Some(parent_folder.id),
+                content_type.to_string(),
+                &temp_path,
+                Some(blake3_hash),
+            )
             .await
             .map_err(|e| AppError::internal_error(format!("Failed to create file: {}", e)))?;
 
