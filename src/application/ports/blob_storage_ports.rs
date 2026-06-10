@@ -60,17 +60,18 @@ pub trait BlobStorageBackend: Send + Sync + 'static {
     /// without overwriting.  Returns the number of bytes stored.
     fn put_blob_from_bytes(&self, hash: &str, data: Bytes) -> BoxFut<'_, Result<u64, DomainError>>;
 
-    /// Store a blob from in-memory bytes **without a durability barrier**.
+    /// Store a blob from in-memory bytes **without forcing durability**.
     ///
-    /// The CDC chunk path writes thousands of small chunks per file; paying
-    /// two fsyncs per chunk (file + parent dir) put ~8 000 fsyncs on the
-    /// critical path of a 1 GB upload. Callers using this MUST issue one
-    /// [`Self::sync_blobs`] barrier over the written hashes before
-    /// persisting any record that references them (the chunk manifest).
+    /// Same idempotency contract as [`Self::put_blob_from_bytes`], but the
+    /// bytes may still sit in volatile caches (e.g. the OS page cache) when
+    /// the future resolves. Durability is only guaranteed after a subsequent
+    /// [`Self::sync_blobs`] covering this hash returns `Ok`. Callers MUST NOT
+    /// record a durable reference to the blob (e.g. a PostgreSQL row) before
+    /// that sync completes.
     ///
-    /// Default: delegates to [`Self::put_blob_from_bytes`] — correct for
-    /// remote backends (S3, Azure) where a successful PUT is already
-    /// durable and the "unsynced" notion does not exist.
+    /// Default: delegates to `put_blob_from_bytes` (immediately durable),
+    /// pairing with the no-op `sync_blobs` default so backends that don't
+    /// opt in keep today's per-write durability semantics.
     fn put_blob_from_bytes_unsynced(
         &self,
         hash: &str,
@@ -79,14 +80,15 @@ pub trait BlobStorageBackend: Send + Sync + 'static {
         self.put_blob_from_bytes(hash, data)
     }
 
-    /// Durability barrier for blobs previously written with
-    /// [`Self::put_blob_from_bytes_unsynced`]: when this resolves, the
-    /// listed blobs and their directory entries survive a power loss.
+    /// Make previously written blobs durable in one batched operation.
     ///
-    /// Default: no-op — matches the default `put_blob_from_bytes_unsynced`,
-    /// which is already durable on completion.
-    fn sync_blobs(&self, hashes: &[String]) -> BoxFut<'_, Result<(), DomainError>> {
-        let _ = hashes;
+    /// Durability barrier for blobs written via `put_blob_from_bytes_unsynced`:
+    /// when this returns `Ok`, every listed blob is crash-safe. Local
+    /// filesystem backends fsync each listed blob file plus each distinct
+    /// parent directory once — one sweep per upload instead of two fsyncs
+    /// per chunk. Remote object stores are durable on PUT, so the default
+    /// is a no-op.
+    fn sync_blobs(&self, _hashes: &[String]) -> BoxFut<'_, Result<(), DomainError>> {
         Box::pin(async { Ok(()) })
     }
 

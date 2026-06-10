@@ -53,6 +53,19 @@ impl EncryptedBlobBackend {
     }
 }
 
+/// Encrypt `data` into the on-disk layout: `[12-byte nonce][ciphertext + tag]`.
+fn encrypt_bytes(cipher: &Aes256Gcm, data: &[u8]) -> Result<Bytes, DomainError> {
+    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+    let ciphertext = cipher
+        .encrypt(&nonce, data)
+        .map_err(|e| DomainError::internal_error("Encryption", format!("encrypt failed: {e}")))?;
+
+    let mut encrypted = Vec::with_capacity(NONCE_SIZE + ciphertext.len());
+    encrypted.extend_from_slice(nonce.as_slice());
+    encrypted.extend_from_slice(&ciphertext);
+    Ok(Bytes::from(encrypted))
+}
+
 impl BlobStorageBackend for EncryptedBlobBackend {
     fn initialize(
         &self,
@@ -113,19 +126,8 @@ impl BlobStorageBackend for EncryptedBlobBackend {
         let hash = hash.to_string();
         let cipher = self.cipher.clone();
         Box::pin(async move {
-            // Encrypt in memory: nonce || ciphertext (includes GCM tag)
-            let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
-            let ciphertext = cipher.encrypt(&nonce, data.as_ref()).map_err(|e| {
-                DomainError::internal_error("Encryption", format!("encrypt failed: {e}"))
-            })?;
-
-            let mut encrypted = Vec::with_capacity(NONCE_SIZE + ciphertext.len());
-            encrypted.extend_from_slice(nonce.as_slice());
-            encrypted.extend_from_slice(&ciphertext);
-
-            inner
-                .put_blob_from_bytes(&hash, Bytes::from(encrypted))
-                .await
+            let encrypted = encrypt_bytes(&cipher, data.as_ref())?;
+            inner.put_blob_from_bytes(&hash, encrypted).await
         })
     }
 
@@ -138,21 +140,8 @@ impl BlobStorageBackend for EncryptedBlobBackend {
         let hash = hash.to_string();
         let cipher = self.cipher.clone();
         Box::pin(async move {
-            // Encrypt in memory: nonce || ciphertext (includes GCM tag)
-            let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
-            let ciphertext = cipher.encrypt(&nonce, data.as_ref()).map_err(|e| {
-                DomainError::internal_error("Encryption", format!("encrypt failed: {e}"))
-            })?;
-
-            let mut encrypted = Vec::with_capacity(NONCE_SIZE + ciphertext.len());
-            encrypted.extend_from_slice(nonce.as_slice());
-            encrypted.extend_from_slice(&ciphertext);
-
-            // Delegate the relaxed-durability variant so encryption over
-            // the local backend keeps the batched `sync_blobs` barrier.
-            inner
-                .put_blob_from_bytes_unsynced(&hash, Bytes::from(encrypted))
-                .await
+            let encrypted = encrypt_bytes(&cipher, data.as_ref())?;
+            inner.put_blob_from_bytes_unsynced(&hash, encrypted).await
         })
     }
 
@@ -160,7 +149,8 @@ impl BlobStorageBackend for EncryptedBlobBackend {
         &self,
         hashes: &[String],
     ) -> Pin<Box<dyn std::future::Future<Output = Result<(), DomainError>> + Send + '_>> {
-        // Pure passthrough — encryption does not change blob addressing.
+        // Hashes key the *plaintext* content but address the same inner
+        // blobs, so the durability sweep forwards untouched.
         self.inner.sync_blobs(hashes)
     }
 

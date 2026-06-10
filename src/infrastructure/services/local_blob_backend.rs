@@ -36,16 +36,11 @@ async fn fsync_parent_dir(child_path: &Path) {
     let Some(parent) = child_path.parent() else {
         return;
     };
-    fsync_dir(parent).await;
-}
-
-/// Fsync a directory (best-effort — see [`fsync_parent_dir`]).
-async fn fsync_dir(dir: &Path) {
-    let dir_owned = dir.to_owned();
+    let parent = parent.to_owned();
     // std::fs (synchronous) opens directories reliably on Linux/macOS;
     // do it on the blocking pool so we don't park the tokio worker.
     let result = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
-        let dir = std::fs::File::open(&dir_owned)?;
+        let dir = std::fs::File::open(&parent)?;
         dir.sync_all()
     })
     .await;
@@ -54,37 +49,96 @@ async fn fsync_dir(dir: &Path) {
         Ok(Err(e)) => {
             tracing::warn!(
                 error = %e,
-                path = %dir.display(),
-                "Blob dir fsync failed (rename durability not guaranteed)"
+                path = %child_path.display(),
+                "Blob parent-dir fsync failed (rename durability not guaranteed)"
             );
         }
         Err(e) => {
             tracing::warn!(
                 error = %e,
-                path = %dir.display(),
-                "Blob dir fsync task join failed"
+                path = %child_path.display(),
+                "Blob parent-dir fsync task join failed"
             );
         }
     }
 }
 
-/// Open + fsync a blob file so its content survives a power loss.
-async fn fsync_blob_file(path: &Path) -> Result<(), DomainError> {
-    let file = fs::File::open(path).await.map_err(|e| {
-        DomainError::internal_error("Blob", format!("Failed to open blob for fsync: {}", e))
-    })?;
-    file.sync_all().await.map_err(|e| {
-        DomainError::internal_error("Blob", format!("Failed to fsync blob file: {}", e))
-    })?;
+/// Chunk size for streaming file reads (256 KB).
+const STREAM_CHUNK_SIZE: usize = 256 * 1024;
+
+/// Max parallel blocking tasks for the [`fsync_paths_parallel`] sweep.
+///
+/// Concurrent fsyncs let journaling filesystems coalesce barriers (ext4
+/// merges parallel fsyncs into shared journal commits), so a sweep over
+/// thousands of chunk files costs a small fraction of issuing the same
+/// fsyncs sequentially.
+const SYNC_SWEEP_CONCURRENCY: usize = 16;
+
+/// Fsync every path in `paths`, spread over up to
+/// [`SYNC_SWEEP_CONCURRENCY`] blocking-pool tasks.
+///
+/// `strict` mirrors the two durability tiers already present in this
+/// module: blob *files* must be durable (hard error on failure, like
+/// `put_blob_from_bytes`), while *directory* fsyncs are best-effort
+/// (logged warning, like [`fsync_parent_dir`]) — directories can't be
+/// opened for fsync on every platform.
+async fn fsync_paths_parallel(paths: Vec<PathBuf>, strict: bool) -> Result<(), DomainError> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let group_size = paths.len().div_ceil(SYNC_SWEEP_CONCURRENCY);
+    let mut tasks = Vec::with_capacity(SYNC_SWEEP_CONCURRENCY);
+    for group in paths.chunks(group_size) {
+        let group = group.to_vec();
+        tasks.push(tokio::task::spawn_blocking(
+            move || -> Result<(), (PathBuf, std::io::Error)> {
+                for path in &group {
+                    let result = std::fs::File::open(path).and_then(|f| f.sync_all());
+                    if let Err(e) = result {
+                        if strict {
+                            return Err((path.clone(), e));
+                        }
+                        tracing::warn!(
+                            error = %e,
+                            path = %path.display(),
+                            "Blob sync sweep: best-effort fsync failed"
+                        );
+                    }
+                }
+                Ok(())
+            },
+        ));
+    }
+    for task in tasks {
+        task.await
+            .map_err(|e| DomainError::internal_error("Blob", format!("sync sweep join: {e}")))?
+            .map_err(|(path, e)| {
+                DomainError::internal_error(
+                    "Blob",
+                    format!("sync sweep fsync of {} failed: {e}", path.display()),
+                )
+            })?;
+    }
     Ok(())
 }
 
-/// Concurrent fsyncs in flight during a [`BlobStorageBackend::sync_blobs`]
-/// barrier — lets the kernel coalesce writeback across many small chunks.
-const SYNC_BLOBS_CONCURRENCY: usize = 16;
-
-/// Chunk size for streaming file reads (256 KB).
-const STREAM_CHUNK_SIZE: usize = 256 * 1024;
+/// Create `blob_path` and write `data` into it.
+///
+/// Returns the open file handle so the caller decides the durability tier
+/// (fsync now vs. deferred batch sync), or `None` when the blob already
+/// existed (idempotent skip — content-addressed, so identical by definition).
+async fn write_blob_bytes(blob_path: &Path, data: &Bytes) -> Result<Option<File>, DomainError> {
+    if fs::try_exists(blob_path).await.unwrap_or(false) {
+        return Ok(None);
+    }
+    let mut file = fs::File::create(blob_path).await.map_err(|e| {
+        DomainError::internal_error("Blob", format!("Failed to create blob file: {}", e))
+    })?;
+    file.write_all(data).await.map_err(|e| {
+        DomainError::internal_error("Blob", format!("Failed to write blob from bytes: {}", e))
+    })?;
+    Ok(Some(file))
+}
 
 /// Compile-time lookup table for the 256 two-digit lowercase hex prefixes ("00"…"ff").
 static HEX_PREFIXES: [&str; 256] = [
@@ -136,28 +190,6 @@ impl LocalBlobBackend {
     /// Return a reference to the blob root directory.
     pub fn blob_root(&self) -> &Path {
         &self.blob_root
-    }
-
-    /// Write `data` to `blob_path` unless it already exists (idempotent
-    /// dedup-skip). Returns `true` when a new file was written. No
-    /// durability barrier here — callers choose between the per-file
-    /// fsync (`put_blob_from_bytes`) and the batched `sync_blobs` barrier
-    /// (`put_blob_from_bytes_unsynced`).
-    async fn write_blob_bytes(&self, blob_path: &Path, data: &Bytes) -> Result<bool, DomainError> {
-        if fs::try_exists(blob_path).await.unwrap_or(false) {
-            return Ok(false);
-        }
-
-        // `fs::write` is `create + write_all + close` — but the close on
-        // tokio::fs::File does NOT fsync, so durability is layered on
-        // explicitly by the caller.
-        let mut file = fs::File::create(blob_path).await.map_err(|e| {
-            DomainError::internal_error("Blob", format!("Failed to create blob file: {}", e))
-        })?;
-        file.write_all(data).await.map_err(|e| {
-            DomainError::internal_error("Blob", format!("Failed to write blob from bytes: {}", e))
-        })?;
-        Ok(true)
     }
 }
 
@@ -262,15 +294,22 @@ impl BlobStorageBackend for LocalBlobBackend {
         let hash = hash.to_owned();
         Box::pin(async move {
             let blob_path = self.blob_path(&hash);
-            if self.write_blob_bytes(&blob_path, &data).await? {
-                // Same durability story as `put_blob`: the blob file is
-                // fsync'd before the parent directory is, so both the
-                // content and the dirent creation survive a power loss in
-                // the same step.
-                fsync_blob_file(&blob_path).await?;
+            let size = data.len() as u64;
+
+            // Same durability story as `put_blob`: the blob file is
+            // fsync'd before the parent directory is, so both the content
+            // and the dirent creation survive a power loss in the same
+            // step. (tokio's `sync_all` flushes its internal buffer
+            // before issuing the fsync.)
+            if let Some(file) = write_blob_bytes(&blob_path, &data).await? {
+                file.sync_all().await.map_err(|e| {
+                    DomainError::internal_error("Blob", format!("Failed to fsync blob file: {}", e))
+                })?;
+                drop(file);
                 fsync_parent_dir(&blob_path).await;
             }
-            Ok(data.len() as u64)
+
+            Ok(size)
         })
     }
 
@@ -282,11 +321,18 @@ impl BlobStorageBackend for LocalBlobBackend {
         let hash = hash.to_owned();
         Box::pin(async move {
             let blob_path = self.blob_path(&hash);
-            // No fsync here — the CDC chunk path issues one `sync_blobs`
-            // barrier over all written chunks before the manifest row that
-            // references them is committed.
-            self.write_blob_bytes(&blob_path, &data).await?;
-            Ok(data.len() as u64)
+            let size = data.len() as u64;
+
+            if let Some(mut file) = write_blob_bytes(&blob_path, &data).await? {
+                // flush surfaces write errors (e.g. ENOSPC) that tokio
+                // would otherwise swallow on drop. It does NOT fsync —
+                // durability comes from the caller's later `sync_blobs`.
+                file.flush().await.map_err(|e| {
+                    DomainError::internal_error("Blob", format!("Failed to flush blob file: {}", e))
+                })?;
+            }
+
+            Ok(size)
         })
     }
 
@@ -295,31 +341,25 @@ impl BlobStorageBackend for LocalBlobBackend {
         hashes: &[String],
     ) -> Pin<Box<dyn std::future::Future<Output = Result<(), DomainError>> + Send + '_>> {
         let paths: Vec<PathBuf> = hashes.iter().map(|h| self.blob_path(h)).collect();
-        // One fsync per DISTINCT parent directory — the hash-sharded layout
-        // spreads chunks over at most 256 dirs, so this replaces the former
-        // one-dir-fsync-per-chunk. Best-effort, same as `put_blob`.
-        let parents: std::collections::HashSet<PathBuf> = paths
-            .iter()
-            .filter_map(|p| p.parent().map(Path::to_owned))
-            .collect();
         Box::pin(async move {
-            // Fsync every blob file concurrently — the kernel coalesces
-            // batched writeback far better than an fsync after every write
-            // on the upload critical path.
-            use futures::stream::{self, StreamExt};
-            let results: Vec<Result<(), DomainError>> = stream::iter(paths)
-                .map(|path| async move { fsync_blob_file(&path).await })
-                .buffer_unordered(SYNC_BLOBS_CONCURRENCY)
-                .collect()
-                .await;
-            for result in results {
-                result?;
+            if paths.is_empty() {
+                return Ok(());
             }
 
-            for parent in &parents {
-                fsync_dir(parent).await;
-            }
+            // Each distinct prefix directory is fsync'd exactly once —
+            // chunks of one upload land in at most 256 prefix dirs, so
+            // this replaces one dir fsync *per chunk* with ≤256 total.
+            let mut dirs: Vec<PathBuf> = paths
+                .iter()
+                .filter_map(|p| p.parent().map(Path::to_path_buf))
+                .collect();
+            dirs.sort_unstable();
+            dirs.dedup();
 
+            // Files first (hard requirement), then dirents (best-effort,
+            // same tier as fsync_parent_dir).
+            fsync_paths_parallel(paths, true).await?;
+            fsync_paths_parallel(dirs, false).await?;
             Ok(())
         })
     }
@@ -451,5 +491,95 @@ impl BlobStorageBackend for LocalBlobBackend {
 
     fn local_blob_path(&self, hash: &str) -> Option<PathBuf> {
         Some(self.blob_path(hash))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::StreamExt;
+    use tempfile::TempDir;
+
+    /// 64-char fake hash with the given 2-char prefix (selects the prefix dir).
+    fn fake_hash(prefix: &str) -> String {
+        format!("{prefix}{}", "0".repeat(62))
+    }
+
+    async fn read_blob(backend: &LocalBlobBackend, hash: &str) -> Vec<u8> {
+        let mut stream = backend.get_blob_stream(hash).await.unwrap();
+        let mut data = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            data.extend_from_slice(&chunk.unwrap());
+        }
+        data
+    }
+
+    #[tokio::test]
+    async fn unsynced_write_then_sync_blobs_roundtrip() {
+        let tmp = TempDir::new().unwrap();
+        let backend = LocalBlobBackend::new(tmp.path());
+        backend.initialize().await.unwrap();
+
+        // Two different prefixes → exercises the distinct-parent-dir dedup.
+        let h1 = fake_hash("aa");
+        let h2 = fake_hash("bb");
+        backend
+            .put_blob_from_bytes_unsynced(&h1, Bytes::from_static(b"chunk one"))
+            .await
+            .unwrap();
+        backend
+            .put_blob_from_bytes_unsynced(&h2, Bytes::from_static(b"chunk two"))
+            .await
+            .unwrap();
+
+        backend.sync_blobs(&[h1.clone(), h2.clone()]).await.unwrap();
+
+        assert!(backend.blob_exists(&h1).await.unwrap());
+        assert!(backend.blob_exists(&h2).await.unwrap());
+        assert_eq!(read_blob(&backend, &h1).await, b"chunk one");
+        assert_eq!(read_blob(&backend, &h2).await, b"chunk two");
+    }
+
+    #[tokio::test]
+    async fn unsynced_write_is_idempotent() {
+        let tmp = TempDir::new().unwrap();
+        let backend = LocalBlobBackend::new(tmp.path());
+        backend.initialize().await.unwrap();
+
+        let hash = fake_hash("cc");
+        let size1 = backend
+            .put_blob_from_bytes_unsynced(&hash, Bytes::from_static(b"same content"))
+            .await
+            .unwrap();
+        let size2 = backend
+            .put_blob_from_bytes_unsynced(&hash, Bytes::from_static(b"same content"))
+            .await
+            .unwrap();
+
+        assert_eq!(size1, size2);
+        assert_eq!(read_blob(&backend, &hash).await, b"same content");
+    }
+
+    #[tokio::test]
+    async fn sync_blobs_fails_on_missing_blob() {
+        let tmp = TempDir::new().unwrap();
+        let backend = LocalBlobBackend::new(tmp.path());
+        backend.initialize().await.unwrap();
+
+        let missing = fake_hash("dd");
+        assert!(
+            backend.sync_blobs(&[missing]).await.is_err(),
+            "sweeping a never-written blob must fail — the caller would \
+             otherwise insert a PG row for a chunk that doesn't exist"
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_blobs_empty_is_noop() {
+        let tmp = TempDir::new().unwrap();
+        let backend = LocalBlobBackend::new(tmp.path());
+        backend.initialize().await.unwrap();
+
+        backend.sync_blobs(&[]).await.unwrap();
     }
 }

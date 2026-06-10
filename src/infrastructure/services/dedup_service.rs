@@ -21,10 +21,13 @@
 //! **Write-first strategy** (store_from_file):
 //!   1. CDC-analyse the file (mmap → FastCDC boundaries + per-chunk BLAKE3).
 //!   2. Batch-check which chunk hashes already exist in PG (dedup skip).
-//!   3. Read + upload only *new* chunks to the blob backend (idempotent).
-//!   4. Bump ref_count for existing chunks (no disk I/O).
-//!   5. Single manifest INSERT (~few ms total).
-//!   6. PG connection is never held during disk I/O.
+//!   3. Bump ref_count for existing chunks (no disk I/O).
+//!   4. Read + write only *new* chunks to the blob backend (idempotent,
+//!      no per-chunk fsync).
+//!   5. One batched fsync sweep makes the new chunks durable, then ONE
+//!      batched INSERT registers them — durability before visibility.
+//!   6. Single manifest INSERT (~few ms total).
+//!   7. PG connection is never held during disk I/O.
 //!
 //! Benefits:
 //! - Sub-file dedup: edited files share unchanged chunks
@@ -457,10 +460,17 @@ impl DedupService {
     ///
     /// Phase 0: Batch-queries PG to discover which chunk hashes already
     /// exist in `storage.blobs`.
-    /// Phase 1: Reads only *new* chunks from the source file (the biggest
-    /// I/O saving for versioned files where most chunks are unchanged).
-    /// Uploads each new chunk and bumps `ref_count` for chunks that already
-    /// exist, with up to [`CHUNK_UPLOAD_CONCURRENCY`] uploads in flight.
+    /// Phase 1: Bumps `ref_count` for chunks that already exist (one
+    /// batched UPDATE, no disk I/O — the biggest saving for versioned
+    /// files where most chunks are unchanged).
+    /// Phase 2: Reads + writes only *new* chunks, with up to
+    /// [`CHUNK_UPLOAD_CONCURRENCY`] writes in flight and **no per-chunk
+    /// fsync**.
+    /// Phase 3: One batched `sync_blobs` sweep makes every new chunk
+    /// durable (no-op for remote backends, which are durable on PUT).
+    /// Phase 4: ONE batched INSERT registers the new chunks in PG. The
+    /// sweep runs first so a crash can never leave a `storage.blobs` row
+    /// pointing at bytes that were still in the page cache.
     ///
     /// `ref_count` is incremented once per *distinct* chunk (one reference per
     /// manifest), staying symmetric with `remove_manifest_reference` so a file
@@ -535,22 +545,16 @@ impl DedupService {
             .filter(|c| !existing_hashes.contains(&c.hash))
             .map(|c| (c.hash.clone(), c.offset as u64, c.length))
             .collect();
-        let new_hashes: Vec<String> = new_ops.iter().map(|(h, _, _)| h.clone()).collect();
-        let new_sizes: Vec<i64> = new_ops.iter().map(|(_, _, l)| *l as i64).collect();
 
         let source = Arc::new(std::fs::File::open(source_path).map_err(|e| {
             DomainError::internal_error("Dedup", format!("Failed to open source file: {}", e))
         })?);
 
-        // Chunks are written WITHOUT a per-chunk durability barrier — the
-        // former two fsyncs per chunk put ~8 000 fsyncs on the critical path
-        // of a 1 GB upload. One `sync_blobs` barrier below makes every chunk
-        // durable before the manifest (the only record referencing them) is
-        // committed, so the durability contract observed by the caller is
-        // unchanged. A crash before the barrier leaves orphan chunk files
-        // with no DB row — the same orphan class the per-chunk scheme had,
-        // just a wider window.
-        let results: Vec<Result<(), DomainError>> = stream::iter(new_ops)
+        // Writes are *unsynced*: no per-chunk fsync. Durability comes from
+        // the single batched sweep below, BEFORE any PG row references the
+        // new chunks — so a crash can never leave storage.blobs claiming a
+        // chunk whose bytes didn't reach the platter.
+        let results: Vec<Result<(String, i64), DomainError>> = stream::iter(new_ops)
             .map(|(hash, offset, length)| {
                 let source = source.clone();
                 let backend = backend.clone();
@@ -574,30 +578,36 @@ impl DedupService {
                     backend
                         .put_blob_from_bytes_unsynced(&hash, Bytes::from(bytes))
                         .await?;
-                    Ok(())
+                    Ok((hash, length as i64))
                 }
             })
             .buffer_unordered(Self::CHUNK_UPLOAD_CONCURRENCY)
             .collect()
             .await;
 
+        let mut new_rows: Vec<(String, i64)> = Vec::with_capacity(results.len());
         for result in results {
-            result?;
+            new_rows.push(result?);
         }
 
-        if !new_hashes.is_empty() {
-            // Durability barrier: every new chunk (and its dirent) is on
-            // stable storage before any DB row references it.
+        if !new_rows.is_empty() {
+            // ── Phase 3: durability barrier — one batched fsync sweep ──────
+            // (was 2 fsyncs per chunk: ~8 200 for a 1 GB upload; now one
+            // parallel sweep over the new files + ≤256 prefix dirs).
+            // Remote backends are durable on PUT — sync_blobs is a no-op.
+            let new_hashes: Vec<String> = new_rows.iter().map(|(h, _)| h.clone()).collect();
             backend.sync_blobs(&new_hashes).await?;
 
-            // One batched upsert for all new chunks (was one round-trip per
-            // chunk, interleaved with the uploads). ON CONFLICT covers a
-            // concurrent uploader inserting the same brand-new chunk between
-            // the existence check above and this INSERT.
+            // ── Phase 4: register all new chunks in ONE batched INSERT ─────
+            // (was one round-trip per chunk). `new_rows` is built from
+            // `unique_chunks`, so no hash repeats within the batch — safe for
+            // ON CONFLICT DO UPDATE, which covers a concurrent uploader
+            // inserting the same brand-new chunk between the existence check
+            // in Phase 0 and this INSERT.
+            let new_sizes: Vec<i64> = new_rows.iter().map(|(_, s)| *s).collect();
             sqlx::query(
                 "INSERT INTO storage.blobs (hash, size, ref_count)
-                 SELECT t.hash, t.size, 1
-                 FROM unnest($1::text[], $2::bigint[]) AS t(hash, size)
+                 SELECT h, s, 1 FROM UNNEST($1::text[], $2::bigint[]) AS t(h, s)
                  ON CONFLICT (hash) DO UPDATE
                    SET ref_count = storage.blobs.ref_count + 1",
             )
