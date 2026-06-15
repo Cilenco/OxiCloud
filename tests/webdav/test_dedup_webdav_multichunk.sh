@@ -73,8 +73,8 @@ dedup_check() { curl -s -H "Authorization: Bearer $TOKEN" "$base_url/api/dedup/c
 purge_from_trash() {
     local name="$1"
     local tid
-    tid=$(rest_get "/api/trash" \
-        | jq -r --arg n "$name" 'first(.[] | select(.name == $n) | .id) // empty')
+    tid=$(rest_get "/api/trash/resources" \
+        | jq -r --arg n "$name" 'first(.items[] | select(.resource.name == $n) | .resource.id) // empty')
     [[ -n "$tid" ]] && rest_delete "/api/trash/$tid" > /dev/null || true
 }
 
@@ -179,8 +179,8 @@ echo "  step 4: trash + permanently delete $FILE_A..."
 ST=$(rest_delete "/api/files/$FILE_A_ID")
 [[ "$ST" == "204" ]] || fail "DELETE $FILE_A expected 204, got $ST"
 
-TRASH_A=$(rest_get "/api/trash" \
-    | jq -r --arg n "$FILE_A" 'first(.[] | select(.name == $n) | .id) // empty')
+TRASH_A=$(rest_get "/api/trash/resources" \
+    | jq -r --arg n "$FILE_A" 'first(.items[] | select(.resource.name == $n) | .resource.id) // empty')
 [[ -n "$TRASH_A" ]] || fail "File A not found in trash"
 ST=$(rest_delete "/api/trash/$TRASH_A")
 [[ "$ST" == "200" ]] || fail "Permanent delete file A expected 200, got $ST"
@@ -206,8 +206,8 @@ echo "  step 6: trash + permanently delete $FILE_B..."
 ST=$(rest_delete "/api/files/$FILE_B_ID")
 [[ "$ST" == "204" ]] || fail "DELETE $FILE_B expected 204, got $ST"
 
-TRASH_B=$(rest_get "/api/trash" \
-    | jq -r --arg n "$FILE_B" 'first(.[] | select(.name == $n) | .id) // empty')
+TRASH_B=$(rest_get "/api/trash/resources" \
+    | jq -r --arg n "$FILE_B" 'first(.items[] | select(.resource.name == $n) | .resource.id) // empty')
 [[ -n "$TRASH_B" ]] || fail "File B not found in trash"
 ST=$(rest_delete "/api/trash/$TRASH_B")
 [[ "$ST" == "200" ]] || fail "Permanent delete file B expected 200, got $ST"

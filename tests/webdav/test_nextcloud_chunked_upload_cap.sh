@@ -51,8 +51,8 @@ rest_delete() { curl -s -o /dev/null -w "%{http_code}" -X DELETE -H "Authorizati
 purge_from_trash() {
     local name="$1"
     local tid
-    tid=$(rest_get "/api/trash" \
-        | jq -r --arg n "$name" 'first(.[] | select(.name == $n) | .id) // empty')
+    tid=$(rest_get "/api/trash/resources" \
+        | jq -r --arg n "$name" 'first(.items[] | select(.resource.name == $n) | .resource.id) // empty')
     [[ -n "$tid" ]] && rest_delete "/api/trash/$tid" > /dev/null || true
 }
 

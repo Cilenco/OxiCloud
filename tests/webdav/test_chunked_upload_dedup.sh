@@ -43,8 +43,8 @@ dedup_check() { curl -s -H "Authorization: Bearer $TOKEN" "$base_url/api/dedup/c
 purge_from_trash() {
     local name="$1"
     local tid
-    tid=$(rest_get "/api/trash" \
-        | jq -r --arg n "$name" 'first(.[] | select(.name == $n) | .id) // empty')
+    tid=$(rest_get "/api/trash/resources" \
+        | jq -r --arg n "$name" 'first(.items[] | select(.resource.name == $n) | .resource.id) // empty')
     [[ -n "$tid" ]] && rest_delete "/api/trash/$tid" > /dev/null || true
 }
 

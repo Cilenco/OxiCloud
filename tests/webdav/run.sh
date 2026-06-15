@@ -62,20 +62,30 @@ OXICLOUD_SERVER_PORT=$SERVER_PORT
 OXICLOUD_STORAGE_PATH="$REPO_ROOT/tests/api/storage"
 set +a
 
-mkdir -p "$OXICLOUD_STORAGE_PATH"
+# ensure storage is empty before starting (regex-gated rm -rf).
+# Previously this script only ran `mkdir -p`, so a standalone webdav run
+# inherited state from a prior api run — now both runners wipe uniformly.
+# shellcheck source=../common/wipe-storage.sh
+source "$COMMON/wipe-storage.sh"
+wipe_storage "$OXICLOUD_STORAGE_PATH"
 
 # ── 3. Start OxiCloud server ──────────────────────────────────────────────────
 
 BUILD_TARGET="${BUILD_TARGET:-debug}"
 OXICLOUD_BIN="$REPO_ROOT/target/$BUILD_TARGET/oxicloud"
 
+# `--config` pins the env file the binary reads AND suppresses the default
+# `.env` probe in main.rs, so a developer's repo-root `.env` can never leak
+# into a test run. Bash also sourced the same file above, so anything the
+# test harness itself reads via $OXICLOUD_* stays available; dotenvy won't
+# override those already-exported values.
 if [[ -x "$OXICLOUD_BIN" ]]; then
   log "Starting pre-built OxiCloud server ($BUILD_TARGET) on port $SERVER_PORT..."
-  "$OXICLOUD_BIN" &
+  "$OXICLOUD_BIN" --config "$COMMON/server.env" &
 else
   log "Building and starting OxiCloud server on port $SERVER_PORT..."
   cd "$REPO_ROOT"
-  cargo run &
+  cargo run -- --config "$COMMON/server.env" &
 fi
 SERVER_PID=$!
 log "Waiting for server at $base_url..."

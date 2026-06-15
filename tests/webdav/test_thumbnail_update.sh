@@ -132,8 +132,8 @@ else
 fi
 
 echo "  cleanup: checking trash for '$REMOTE'..."
-STALE=$(rest_get "/api/trash" \
-    | jq -r --arg n "$REMOTE" 'first(.[] | select(.name == $n) | .id) // empty')
+STALE=$(rest_get "/api/trash/resources" \
+    | jq -r --arg n "$REMOTE" 'first(.items[] | select(.resource.name == $n) | .resource.id) // empty')
 if [[ -n "$STALE" ]]; then
     echo "  cleanup: found trash item id=$STALE — purging..."
     ST=$(rest_delete "/api/trash/$STALE")
@@ -221,8 +221,8 @@ echo "  cleanup: WebDAV DELETE → $STATUS"
 [[ "$STATUS" == "204" ]] || fail "WebDAV DELETE expected 204, got $STATUS"
 pass "WebDAV DELETE → 204"
 
-TRASH_ITEM=$(rest_get "/api/trash" \
-    | jq -r --arg n "$REMOTE" '.[] | select(.name == $n) | .id // empty')
+TRASH_ITEM=$(rest_get "/api/trash/resources" \
+    | jq -r --arg n "$REMOTE" 'first(.items[] | select(.resource.name == $n) | .resource.id) // empty')
 if [[ -n "$TRASH_ITEM" ]]; then
     ST=$(rest_delete "/api/trash/$TRASH_ITEM")
     echo "  cleanup: DELETE /api/trash/$TRASH_ITEM → $ST"

@@ -113,8 +113,8 @@ for REMOTE in "$FILE_A" "$FILE_B"; do
         echo "  cleanup: deleting existing $REMOTE (id=$EXISTING_ID)"
         rest_delete "/api/files/$EXISTING_ID" > /dev/null
     fi
-    STALE=$(rest_get "/api/trash" \
-        | jq -r --arg n "$REMOTE" 'first(.[] | select(.name == $n) | .id) // empty')
+    STALE=$(rest_get "/api/trash/resources" \
+        | jq -r --arg n "$REMOTE" 'first(.items[] | select(.resource.name == $n) | .resource.id) // empty')
     if [[ -n "$STALE" ]]; then
         echo "  cleanup: purging $REMOTE from trash (id=$STALE)"
         rest_delete "/api/trash/$STALE" > /dev/null
@@ -221,8 +221,8 @@ echo "  cleanup..."
 for REMOTE in "$FILE_A" "$FILE_B"; do
     ST=$(webdav_delete "$REMOTE")
     [[ "$ST" == "204" ]] || fail "WebDAV DELETE $REMOTE expected 204, got $ST"
-    TRASH_ITEM=$(rest_get "/api/trash" \
-        | jq -r --arg n "$REMOTE" 'first(.[] | select(.name == $n) | .id) // empty')
+    TRASH_ITEM=$(rest_get "/api/trash/resources" \
+        | jq -r --arg n "$REMOTE" 'first(.items[] | select(.resource.name == $n) | .resource.id) // empty')
     if [[ -n "$TRASH_ITEM" ]]; then
         rest_delete "/api/trash/$TRASH_ITEM" > /dev/null
     fi

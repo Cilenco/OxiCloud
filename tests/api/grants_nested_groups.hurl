@@ -365,7 +365,7 @@ Authorization: Bearer {{henry_token}}
 HTTP 200
 [Asserts]
 jsonpath "$.items[?(@.resource.id=='{{perm_folder_id}}')].resource_type" == "folder"
-jsonpath "$.items[?(@.resource.id=='{{perm_folder_id}}')].permissions"   includes "read"
+jsonpath "$.items[?(@.resource.id=='{{perm_folder_id}}')].permissions"   contains "read"
 
 # ── Mutations still denied (Viewer has no Update/Create/Delete) ─
 POST {{base_url}}/api/folders

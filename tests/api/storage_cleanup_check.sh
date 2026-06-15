@@ -151,6 +151,43 @@ log "API confirms trash is empty."
 THUMB_FILES=$(find "$STORAGE_PATH/.thumbnails" -type f 2>/dev/null || true)
 BLOB_FILES=$(find  "$STORAGE_PATH/.blobs"      -type f 2>/dev/null || true)
 
+if [[ -n "$THUMB_FILES" || -n "$BLOB_FILES" ]]; then
+    # Async thumbnail/blob workers may still be flushing writes from the
+    # last test's uploads when the cleanup phase reaches this point —
+    # particularly on fast CI runners where the test loop outpaces the
+    # worker. Poll for up to 5 s and exit the loop the moment storage
+    # drains. TODO: replace with a deterministic worker-drain signal
+    # (e.g. queue depth on /ready) when one exists.
+    log "Thumb/blob leftovers detected — polling for async worker drain (race guard)"
+    for attempt in 1 2 3 4 5; do
+        sleep 1
+        THUMB_FILES=$(find "$STORAGE_PATH/.thumbnails" -type f 2>/dev/null || true)
+        BLOB_FILES=$(find  "$STORAGE_PATH/.blobs"      -type f 2>/dev/null || true)
+        [[ -z "$THUMB_FILES" && -z "$BLOB_FILES" ]] && break
+        log "  attempt $attempt: still present, retrying..."
+    done
+fi
+
+# Chunked-upload spool. After every chunked-upload session is either
+# completed (assembled + promoted) or aborted, this dir MUST be empty
+# — a leftover chunk file means a session-cleanup path forgot its
+# `remove_dir_all`, which under sustained sync workloads is the
+# classic "disk fills up over the weekend" failure mode.
+#
+# `.uploads/` is the default chunked-upload root when
+# `OXICLOUD_CHUNK_DIR` is unset (see `common/di.rs`). REST sessions
+# land under `.uploads/<session_id>/`; NC sessions land under
+# `.uploads/nextcloud/<user>/<session_id>/`.
+#
+# We deliberately do NOT check the direct-PUT spool dir here: when
+# `OXICLOUD_UPLOAD_TEMP_DIR` is unset (the default in the test env)
+# it falls back to the OS temp dir (`/tmp/…`) which is shared with
+# the rest of the system and would produce false positives. To
+# extend the check to direct-PUT, set OXICLOUD_UPLOAD_TEMP_DIR in
+# tests/common/server.env to a path under $STORAGE_PATH and add it
+# to the find list below.
+UPLOAD_FILES=$(find "$STORAGE_PATH/.uploads"  -type f 2>/dev/null || true)
+
 if [[ -n "$THUMB_FILES" ]]; then
     THUMB_COUNT=$(echo "$THUMB_FILES" | wc -l | tr -d ' ')
     log "Leftover thumbnail files ($THUMB_COUNT):"
@@ -165,4 +202,11 @@ if [[ -n "$BLOB_FILES" ]]; then
     fail "$BLOB_COUNT blob file(s) remain on disk after full cleanup"
 fi
 
-log "OK — no blobs or thumbnails remain on disk."
+if [[ -n "$UPLOAD_FILES" ]]; then
+    UPLOAD_COUNT=$(echo "$UPLOAD_FILES" | wc -l | tr -d ' ')
+    log "Leftover chunked-upload files ($UPLOAD_COUNT):"
+    echo "$UPLOAD_FILES"
+    fail "$UPLOAD_COUNT chunked-upload file(s) remain in .uploads after full cleanup"
+fi
+
+log "OK — no blobs, thumbnails, or chunked-upload leftovers remain on disk."
