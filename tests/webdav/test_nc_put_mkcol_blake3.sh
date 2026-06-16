@@ -145,27 +145,83 @@ ACTUAL=$(nc_curl "$NC_FILES_BASE/f1-small.txt")
 pass "F4: GET after overwrite serves the new bytes (no stale-cache)"
 
 # ─────────────────────────────────────────────────────────────
-# F5 / F6 — Conditional PUT (pinned: currently no-op)
+# F5 / F6 — Conditional PUT (RFC 7232 §3.1/§3.2, RFC 4918 §10)
+#
+# F5 covers `If-None-Match: *`: server MUST refuse the PUT with
+# 412 when the target representation already exists (used by
+# clients to do "create only if absent"). The mirror case — same
+# header on a NEW path — must succeed; covered by F5b.
+#
+# F6 covers `If-Match: "<etag>"`: server MUST refuse the PUT with
+# 412 when the supplied ETag doesn't strong-match the current
+# representation (used by clients to do "update only if
+# unchanged"). The mirror case — correct ETag → success — is
+# covered by F6b.
 # ─────────────────────────────────────────────────────────────
-echo "  F5: PUT with If-None-Match: * on existing path (pinned current: 204, RFC-4918 would be 412)"
+echo "  F5: PUT with If-None-Match: * on existing path → 412"
 HEADERS=$(nc_curl -D - -o /dev/null -X PUT \
     -H "If-None-Match: *" -H "Content-Type: text/plain" \
     --data-binary 'F5-payload' \
     "$NC_FILES_BASE/f1-small.txt")
 STATUS=$(awk 'NR==1{print $2}' <<< "$HEADERS" | tr -d '\r')
-[[ "$STATUS" == "204" || "$STATUS" == "201" ]] \
-    || fail "F5: unexpected status $STATUS (expected 204 — current ignore-conditional behaviour)"
-pass "F5: PUT honours no conditional headers today — pinned"
+[[ "$STATUS" == "412" ]] \
+    || fail "F5: expected 412 Precondition Failed for If-None-Match: * on existing path, got $STATUS"
+pass "F5: If-None-Match: * on existing path → 412"
 
-echo "  F6: PUT with If-Match: \"wrong-etag\" (pinned current: succeeds, RFC-4918 would be 412)"
+echo "  F5b: PUT with If-None-Match: * on NEW path → 201/204"
+HEADERS=$(nc_curl -D - -o /dev/null -X PUT \
+    -H "If-None-Match: *" -H "Content-Type: text/plain" \
+    --data-binary 'F5b-payload' \
+    "$NC_FILES_BASE/f5b-new.txt")
+STATUS=$(awk 'NR==1{print $2}' <<< "$HEADERS" | tr -d '\r')
+[[ "$STATUS" == "201" || "$STATUS" == "204" ]] \
+    || fail "F5b: expected 201/204 for If-None-Match: * on new path, got $STATUS"
+pass "F5b: If-None-Match: * on new path → $STATUS"
+
+echo "  F6: PUT with If-Match: \"wrong-etag\" → 412"
 HEADERS=$(nc_curl -D - -o /dev/null -X PUT \
     -H 'If-Match: "deadbeef-never-matches"' -H "Content-Type: text/plain" \
     --data-binary 'F6-payload' \
     "$NC_FILES_BASE/f1-small.txt")
 STATUS=$(awk 'NR==1{print $2}' <<< "$HEADERS" | tr -d '\r')
-[[ "$STATUS" == "204" || "$STATUS" == "201" ]] \
-    || fail "F6: unexpected status $STATUS (expected 204 — current ignore-conditional behaviour)"
-pass "F6: PUT honours no If-Match today — pinned"
+[[ "$STATUS" == "412" ]] \
+    || fail "F6: expected 412 Precondition Failed for non-matching If-Match, got $STATUS"
+pass "F6: If-Match with non-matching ETag → 412"
+
+echo "  F6b: PUT with correct If-Match → 204"
+# Fetch the current ETag of f1-small.txt via PROPFIND-ish HEAD,
+# then re-PUT with that exact value as If-Match. Must succeed.
+CURRENT_ETAG=$(nc_curl -D - -o /dev/null -X HEAD "$NC_FILES_BASE/f1-small.txt" \
+    | awk 'BEGIN{IGNORECASE=1} /^etag:/ {print $2}' | tr -d '\r')
+[[ -n "$CURRENT_ETAG" ]] || fail "F6b: could not read current ETag via HEAD"
+HEADERS=$(nc_curl -D - -o /dev/null -X PUT \
+    -H "If-Match: $CURRENT_ETAG" -H "Content-Type: text/plain" \
+    --data-binary 'F6b-payload' \
+    "$NC_FILES_BASE/f1-small.txt")
+STATUS=$(awk 'NR==1{print $2}' <<< "$HEADERS" | tr -d '\r')
+[[ "$STATUS" == "204" ]] \
+    || fail "F6b: expected 204 for If-Match with correct ETag, got $STATUS"
+pass "F6b: If-Match with current ETag → 204"
+
+echo "  F6c: PUT with If-Match: * on existing path → 204 (catch-all)"
+HEADERS=$(nc_curl -D - -o /dev/null -X PUT \
+    -H 'If-Match: *' -H "Content-Type: text/plain" \
+    --data-binary 'F6c-payload' \
+    "$NC_FILES_BASE/f1-small.txt")
+STATUS=$(awk 'NR==1{print $2}' <<< "$HEADERS" | tr -d '\r')
+[[ "$STATUS" == "204" ]] \
+    || fail "F6c: expected 204 for If-Match: * on existing path, got $STATUS"
+pass "F6c: If-Match: * on existing path → 204"
+
+echo "  F6d: PUT with If-Match on NEW path → 412 (resource absent → cannot match)"
+HEADERS=$(nc_curl -D - -o /dev/null -X PUT \
+    -H 'If-Match: "anything"' -H "Content-Type: text/plain" \
+    --data-binary 'F6d-payload' \
+    "$NC_FILES_BASE/f6d-new.txt")
+STATUS=$(awk 'NR==1{print $2}' <<< "$HEADERS" | tr -d '\r')
+[[ "$STATUS" == "412" ]] \
+    || fail "F6d: expected 412 for If-Match on absent path, got $STATUS"
+pass "F6d: If-Match on absent path → 412"
 
 # ─────────────────────────────────────────────────────────────
 # F7 — PUT a "large" file → succeeds, GET returns exact bytes
