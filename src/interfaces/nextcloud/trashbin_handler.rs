@@ -9,12 +9,15 @@ use quick_xml::{
 };
 use std::sync::Arc;
 
+use crate::application::ports::file_ports::FileRetrievalUseCase;
+use crate::application::ports::folder_ports::FolderUseCase;
 use crate::application::ports::trash_ports::TrashUseCase;
 use crate::common::di::AppState;
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::{AuthUser, CurrentUser};
 use crate::interfaces::nextcloud::webdav_handler::{
-    batch_resolve_ids, format_oc_id, write_text_element,
+    batch_resolve_ids, extract_nc_subpath_from_dest, format_oc_id, nc_to_internal_path,
+    write_text_element,
 };
 
 const HEADER_DAV: HeaderName = HeaderName::from_static("dav");
@@ -37,7 +40,12 @@ pub async fn handle_nc_trashbin(
             handle_propfind(state, &user).await
         }
         "MOVE" if subpath_trimmed.starts_with("trash/") => {
-            handle_restore(state, &user, subpath_trimmed).await
+            let dest_header = req
+                .headers()
+                .get("destination")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string());
+            handle_restore(state, dest_header, &user, subpath_trimmed).await
         }
         "DELETE" if subpath_trimmed == "trash" || subpath_trimmed.is_empty() => {
             handle_empty_trash(state, &user).await
@@ -98,6 +106,7 @@ async fn handle_propfind(
 
 async fn handle_restore(
     state: Arc<AppState>,
+    dest_header: Option<String>,
     user: &CurrentUser,
     subpath: &str,
 ) -> Result<Response<Body>, AppError> {
@@ -107,6 +116,33 @@ async fn handle_restore(
         .trash_service
         .as_ref()
         .ok_or_else(|| AppError::internal_error("Trash service not available"))?;
+
+    // RFC 4918 §9.9.4 + Sabre convention: clients send `Destination` to
+    // tell the server where the restored item should land. We don't yet
+    // honor it for relocation (restore always lands at the original
+    // path), but we DO honor it for the collision check: if the requested
+    // destination is taken by a live resource the move must be refused
+    // with 412 — there is no `Overwrite: T` workflow for trash restore in
+    // either Sabre/DAV or the NC desktop client (a live file being
+    // silently replaced by an undeleted one would be a footgun).
+    if let Some(dest_header) = dest_header
+        && let Some(dest_subpath) = extract_nc_subpath_from_dest(&dest_header, &user.username)
+    {
+        let dest_internal = nc_to_internal_path(&user.username, &dest_subpath)?;
+        let folder_service = &state.applications.folder_service;
+        let file_service = &state.applications.file_retrieval_service;
+        let dest_taken = file_service.get_file_by_path(&dest_internal).await.is_ok()
+            || folder_service
+                .get_folder_by_path(&dest_internal)
+                .await
+                .is_ok();
+        if dest_taken {
+            return Ok(Response::builder()
+                .status(StatusCode::PRECONDITION_FAILED)
+                .body(Body::empty())
+                .unwrap());
+        }
+    }
 
     match trash_svc.restore_item(&id, user.id).await {
         Ok(()) => Ok(Response::builder()

@@ -737,7 +737,9 @@ async fn handle_mkcol(
 
     let segments: Vec<&str> = subpath.split('/').filter(|s| !s.is_empty()).collect();
     if segments.is_empty() {
-        return Err(AppError::bad_request("MKCOL on the user root is not allowed"));
+        return Err(AppError::bad_request(
+            "MKCOL on the user root is not allowed",
+        ));
     }
     let (target_name, parent_segments) = segments.split_last().expect("checked non-empty above");
 
@@ -1061,7 +1063,7 @@ async fn handle_move(
 /// Only accepts relative paths or absolute URLs whose path starts with the
 /// expected DAV prefix.  For full URLs the host is ignored — the path alone is
 /// used — so an attacker cannot redirect the server to a different host.
-fn extract_nc_subpath_from_dest(dest: &str, username: &str) -> Option<String> {
+pub fn extract_nc_subpath_from_dest(dest: &str, username: &str) -> Option<String> {
     let prefix = format!("/remote.php/dav/files/{}/", username);
     // For full URLs, extract the path portion (everything after the authority).
     let path = if dest.starts_with("http://") || dest.starts_with("https://") {
