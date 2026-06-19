@@ -54,6 +54,7 @@
 	import EmptyState from '$lib/components/EmptyState.svelte';
 	import SkeletonList from '$lib/components/SkeletonList.svelte';
 	import ListToolbar from '$lib/components/ListToolbar.svelte';
+	import VirtualList from '$lib/components/VirtualList.svelte';
 	import { t } from '$lib/i18n/index.svelte';
 	import { files as filesStore } from '$lib/stores/files.svelte';
 	import { formatBytes } from '$lib/utils/format';
@@ -437,6 +438,10 @@
 						{@render row(entry)}
 					{/each}
 				{/each}
+			{:else if filesStore.viewMode === 'list'}
+				<!-- Flat list view: only the visible rows are mounted. The spacer keeps
+				     the full scroll height so the end-of-list sentinel still fires. -->
+				<VirtualList {items} rowHeight={56} key={(e) => e.id} {row} />
 			{:else}
 				{#each items as entry (entry.id)}
 					{@render row(entry)}
