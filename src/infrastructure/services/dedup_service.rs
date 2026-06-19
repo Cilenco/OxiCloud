@@ -1164,9 +1164,13 @@ impl DedupService {
     ///
     /// For CDC manifests: decrements manifest ref_count.  When it reaches 0
     /// the manifest is deleted and all chunk ref_counts are decremented;
-    /// chunks that reach 0 are deleted from both PG and the blob backend.
+    /// chunks that reach 0 are left for [`garbage_collect`](Self::garbage_collect)
+    /// to reclaim once they have been orphaned past the grace window — unlinking
+    /// them here would race a concurrent upload re-referencing the same chunk.
     ///
-    /// For legacy blobs: uses a single TX with `SELECT … FOR UPDATE`.
+    /// For legacy blobs: uses a single TX with `SELECT … FOR UPDATE`. A legacy
+    /// whole-file hash can never be re-created by an ingest (uploads are always
+    /// CDC now), so its file is unlinked eagerly — there is no writer to race.
     pub async fn remove_reference(&self, hash: &str) -> Result<bool, DomainError> {
         // ── CDC manifest path ────────────────────────────────────
         let manifest = sqlx::query_as::<_, (i32, Vec<String>)>(
@@ -1187,7 +1191,12 @@ impl DedupService {
         self.remove_legacy_reference(hash).await
     }
 
-    /// Remove a manifest reference.  Handles chunk cleanup when last ref is removed.
+    /// Remove a manifest reference.  When the last reference is removed the
+    /// manifest is deleted and its chunks are dereferenced, but the chunk files
+    /// are NOT unlinked here: a chunk hash can be re-uploaded concurrently, so
+    /// unlinking right after the commit would race that re-reference (the same
+    /// TOCTOU the GC grace window guards). Newly-orphaned chunks are stamped and
+    /// reclaimed by [`garbage_collect`](Self::garbage_collect).
     async fn remove_manifest_reference(
         &self,
         file_hash: &str,
@@ -1213,7 +1222,7 @@ impl DedupService {
         };
 
         if current_rc <= 1 {
-            // Last reference — delete manifest and decrement chunks
+            // Last reference — delete the manifest and dereference its chunks.
             sqlx::query("DELETE FROM storage.chunk_manifests WHERE file_hash = $1")
                 .bind(file_hash)
                 .execute(&mut *tx)
@@ -1222,45 +1231,36 @@ impl DedupService {
                     DomainError::internal_error("Dedup", format!("Delete manifest: {}", e))
                 })?;
 
-            // Batch decrement chunk ref_counts
-            sqlx::query("UPDATE storage.blobs SET ref_count = ref_count - 1 WHERE hash = ANY($1)")
-                .bind(chunk_hashes)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| {
-                    DomainError::internal_error("Dedup", format!("Decrement chunks: {}", e))
-                })?;
-
-            // Find chunks that reached 0
-            let zero_chunks: Vec<String> = sqlx::query_scalar(
-                "DELETE FROM storage.blobs WHERE hash = ANY($1) AND ref_count <= 0 RETURNING hash",
+            // Decrement chunk ref_counts and stamp orphaned_at on the ones that
+            // reach 0. We deliberately do NOT delete the chunk rows or unlink
+            // their files here: a chunk hash can be re-uploaded concurrently, so
+            // unlinking right after this commit would race that re-reference
+            // (the TOCTOU the grace window guards). garbage_collect() reclaims
+            // them safely once orphaned past the grace window. GREATEST clamps
+            // the single-chunk case where the PG file-delete trigger already
+            // decremented the row (file_hash == chunk_hash).
+            sqlx::query(
+                "UPDATE storage.blobs
+                    SET ref_count   = GREATEST(ref_count - 1, 0),
+                        orphaned_at = CASE WHEN GREATEST(ref_count - 1, 0) = 0 THEN now() ELSE orphaned_at END
+                  WHERE hash = ANY($1)",
             )
             .bind(chunk_hashes)
-            .fetch_all(&mut *tx)
+            .execute(&mut *tx)
             .await
-            .map_err(|e| {
-                DomainError::internal_error("Dedup", format!("Delete zero chunks: {}", e))
-            })?;
+            .map_err(|e| DomainError::internal_error("Dedup", format!("Decrement chunks: {}", e)))?;
 
             tx.commit()
                 .await
                 .map_err(|e| DomainError::internal_error("Dedup", format!("Commit: {}", e)))?;
 
-            // Delete blob files AFTER commit
-            for chunk_hash in &zero_chunks {
-                if let Err(e) = self.backend.delete_blob(chunk_hash).await {
-                    tracing::warn!("Failed to delete chunk blob {}: {}", chunk_hash, e);
-                }
-            }
-
-            // Bug 4 fix: notify hooks — e.g. thumbnail cleanup keyed by file_hash
+            // File content is gone — drop its blob-keyed thumbnails now.
             self.fire_blob_hooks(file_hash);
 
             tracing::info!(
-                "MANIFEST DELETED: {} ({} chunks, {} orphan chunks removed)",
+                "MANIFEST DELETED: {} ({} chunks dereferenced; orphans reclaimed by GC)",
                 &file_hash[..12],
-                chunk_hashes.len(),
-                zero_chunks.len()
+                chunk_hashes.len()
             );
             Ok(true)
         } else {
@@ -3461,6 +3461,76 @@ mod delta_upload_integration_tests {
             .bind(vec![aged, fresh])
             .execute(pool.as_ref())
             .await;
+        cleanup(&pool, &file_hash, file_id, &[]).await;
+    }
+
+    // ── Manifest dereference defers chunk reclamation to GC ──────
+    #[tokio::test]
+    async fn manifest_dereference_defers_chunk_reclamation_to_gc() {
+        let pool = test_pool().await;
+        let dir = TempDir::new().unwrap();
+        let svc = local_svc(&pool, &dir).await;
+        let user = seed_user(&pool).await;
+
+        // Single-owner multi-chunk CDC file → its chunks are uniquely owned.
+        let data = content(3 * 1024 * 1024, 91);
+        let (file_hash, chunks, file_id) =
+            seed_owned_content(&svc, &pool, user, &data, "deref").await;
+        assert!(chunks.len() >= 3, "3 MiB must split into ≥3 chunks");
+
+        // The delete_file_permanently sequence: drop the file row (PG trigger)
+        // then dereference the manifest.
+        sqlx::query("DELETE FROM storage.files WHERE id = $1")
+            .bind(file_id)
+            .execute(pool.as_ref())
+            .await
+            .expect("delete file row");
+        assert!(
+            svc.remove_reference(&file_hash).await.expect("deref"),
+            "last reference removed"
+        );
+
+        // Manifest is gone immediately…
+        let manifest_rc: Option<i32> = sqlx::query_scalar(
+            "SELECT ref_count FROM storage.chunk_manifests WHERE file_hash = $1",
+        )
+        .bind(&file_hash)
+        .fetch_optional(pool.as_ref())
+        .await
+        .expect("manifest query");
+        assert!(manifest_rc.is_none(), "manifest deleted");
+
+        // …but the chunk rows + bytes survive at ref_count 0: no inline unlink
+        // that could race a concurrent re-upload of the same chunk.
+        for c in &chunks {
+            assert_eq!(
+                blob_ref(&pool, c).await,
+                Some(0),
+                "chunk dereferenced, not yet deleted"
+            );
+            assert!(
+                svc.backend().blob_exists(c).await.unwrap(),
+                "chunk bytes kept until GC reclaims them"
+            );
+        }
+
+        // Age the orphans past the grace window; GC then reclaims rows + files.
+        sqlx::query(
+            "UPDATE storage.blobs SET orphaned_at = now() - interval '2 hours' WHERE hash = ANY($1)",
+        )
+        .bind(&chunks)
+        .execute(pool.as_ref())
+        .await
+        .expect("age orphans");
+        svc.garbage_collect().await.expect("gc");
+        for c in &chunks {
+            assert!(blob_ref(&pool, c).await.is_none(), "chunk row reclaimed");
+            assert!(
+                !svc.backend().blob_exists(c).await.unwrap(),
+                "chunk file reclaimed"
+            );
+        }
+
         cleanup(&pool, &file_hash, file_id, &[]).await;
     }
 
