@@ -165,7 +165,7 @@
     top: 50%;
     transform: translateY(-50%);
     background: var(--color-accent-gradient);
-    color: var(--color-danger-text);
+    color: var(--color-on-accent);
     border: none;
     border-radius: var(--radius-xl);
     width: 36px;
