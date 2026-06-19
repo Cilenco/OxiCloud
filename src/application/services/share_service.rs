@@ -838,11 +838,19 @@ mod tests {
             unimplemented!()
         }
 
-        async fn get_parent_folder_id(&self, _path: &str) -> Result<String, DomainError> {
+        async fn get_parent_folder_id(
+            &self,
+            _path: &str,
+            _drive_id: uuid::Uuid,
+        ) -> Result<String, DomainError> {
             unimplemented!()
         }
 
-        async fn get_folder_id_by_path(&self, _folder_path: &str) -> Result<String, DomainError> {
+        async fn get_folder_id_by_path(
+            &self,
+            _folder_path: &str,
+            _drive_id: uuid::Uuid,
+        ) -> Result<String, DomainError> {
             unimplemented!()
         }
 
@@ -898,6 +906,7 @@ mod tests {
             &self,
             _name: String,
             _parent_id: Option<String>,
+            _caller_id: uuid::Uuid,
         ) -> Result<crate::domain::entities::folder::Folder, DomainError> {
             unimplemented!()
         }
@@ -925,6 +934,7 @@ mod tests {
         async fn get_folder_by_path(
             &self,
             _storage_path: &crate::domain::services::path_service::StoragePath,
+            _drive_id: uuid::Uuid,
         ) -> Result<crate::domain::entities::folder::Folder, DomainError> {
             unimplemented!()
         }
@@ -971,6 +981,7 @@ mod tests {
             &self,
             _id: &str,
             _new_name: String,
+            _caller_id: Uuid,
         ) -> Result<crate::domain::entities::folder::Folder, DomainError> {
             unimplemented!()
         }
@@ -979,6 +990,7 @@ mod tests {
             &self,
             _id: &str,
             _new_parent_id: Option<&str>,
+            _caller_id: Uuid,
         ) -> Result<crate::domain::entities::folder::Folder, DomainError> {
             unimplemented!()
         }
@@ -990,6 +1002,7 @@ mod tests {
         async fn folder_exists(
             &self,
             _storage_path: &crate::domain::services::path_service::StoragePath,
+            _drive_id: uuid::Uuid,
         ) -> Result<bool, DomainError> {
             unimplemented!()
         }
@@ -1001,7 +1014,11 @@ mod tests {
             unimplemented!()
         }
 
-        async fn move_to_trash(&self, _folder_id: &str) -> Result<(), DomainError> {
+        async fn move_to_trash(
+            &self,
+            _folder_id: &str,
+            _caller_id: Uuid,
+        ) -> Result<(), DomainError> {
             unimplemented!()
         }
 
@@ -1009,19 +1026,12 @@ mod tests {
             &self,
             _folder_id: &str,
             _original_path: &str,
+            _caller_id: Uuid,
         ) -> Result<(), DomainError> {
             unimplemented!()
         }
 
         async fn delete_folder_permanently(&self, _folder_id: &str) -> Result<(), DomainError> {
-            unimplemented!()
-        }
-
-        async fn create_home_folder(
-            &self,
-            _user_id: Uuid,
-            _name: String,
-        ) -> Result<crate::domain::entities::folder::Folder, DomainError> {
             unimplemented!()
         }
     }

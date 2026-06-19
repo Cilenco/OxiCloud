@@ -44,24 +44,45 @@ pub trait FileUploadUseCase: Send + Sync + 'static {
     /// Register a new file row pointing at an already-ingested blob.
     ///
     /// Takes ownership of the blob's reference (released on failure).
+    ///
+    /// `caller_id` is plumbed down into
+    /// `FileWritePort::save_file_with_blob` so the §14 `created_by` /
+    /// `updated_by` columns record the principal performing the upload —
+    /// not the parent folder's owner. D2 shared drives surface this
+    /// most clearly: Adam upload into Alice's folder must record
+    /// `created_by = adam.id`.
     async fn upload_file_streaming(
         &self,
         name: String,
         folder_id: Option<String>,
         content_type: String,
         blob: StoredBlob,
+        caller_id: Uuid,
     ) -> Result<FileDto, DomainError>;
 
     /// Replace the content of the file at `path` with an already-ingested
     /// blob, or create the file when it doesn't exist (WebDAV/WOPI PUT).
     ///
     /// Takes ownership of the blob's reference (released on failure).
+    ///
+    /// `drive_id` scopes both the existence probe (`find_file_by_path`)
+    /// and the parent-folder resolution (`get_parent_folder_id`) — the
+    /// handler is responsible for deriving it from its protocol context
+    /// (NC chroot, native default-drive lookup, WOPI default-drive).
+    ///
+    /// `caller_id` is plumbed down into
+    /// `FileWritePort::update_file_content_with_blob` so the §14
+    /// `updated_by` column reflects the principal that performed the
+    /// PUT — not the file's existing owner (D2 shared drives let
+    /// non-owners overwrite content).
     async fn update_file_streaming(
         &self,
         path: &str,
+        drive_id: Uuid,
         blob: StoredBlob,
         content_type: &str,
         modified_at: Option<i64>,
+        caller_id: Uuid,
     ) -> Result<FileDto, DomainError>;
 }
 
@@ -104,8 +125,13 @@ pub trait FileRetrievalUseCase: Send + Sync + 'static {
         caller_id: Uuid,
     ) -> Result<FileDto, DomainError>;
 
-    /// Gets a file by its path (for WebDAV)
-    async fn get_file_by_path(&self, path: &str) -> Result<FileDto, DomainError>;
+    /// Gets a file by its path (for WebDAV), scoped to a drive.
+    ///
+    /// Post-D0, `storage.files.path` is unique only within a single
+    /// drive. The `drive_id` filter scopes the lookup to a specific
+    /// drive (caller derives it from its protocol context: NC chroot,
+    /// native default-drive lookup, WOPI default-drive lookup).
+    async fn get_file_by_path(&self, path: &str, drive_id: Uuid) -> Result<FileDto, DomainError>;
 
     /// Lists files in a folder
     async fn list_files(&self, folder_id: Option<&str>) -> Result<Vec<FileDto>, DomainError>;

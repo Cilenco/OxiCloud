@@ -36,8 +36,20 @@ pub trait FolderUseCase: Send + Sync + 'static {
         caller_id: Uuid,
     ) -> Result<FolderDto, DomainError>;
 
-    /// Gets a folder by its path
-    async fn get_folder_by_path(&self, path: &str) -> Result<FolderDto, DomainError>;
+    /// Gets a folder by its path within the caller's tree.
+    ///
+    /// Scoped by `drive_id` because `storage.folders.path` is unique
+    /// only within a single drive after D0 — multiple drives (whether
+    /// owned by the same user or different users) share names like
+    /// `"Personal"` for their root folder (docs/plan/drive.md §10).
+    /// Pre-D0 the wrapper name embedded the username; post-D0 the
+    /// caller derives a `drive_id` from its protocol context (NC
+    /// chroot, native default-drive lookup, WOPI default-drive).
+    async fn get_folder_by_path(
+        &self,
+        path: &str,
+        drive_id: Uuid,
+    ) -> Result<FolderDto, DomainError>;
 
     /// Lists folders within a parent folder
     async fn list_folders(&self, parent_id: Option<&str>) -> Result<Vec<FolderDto>, DomainError>;
@@ -83,13 +95,6 @@ pub trait FolderUseCase: Send + Sync + 'static {
 
     /// Deletes a folder (ownership verified against caller_id)
     async fn delete_folder_with_perms(&self, id: &str, caller_id: Uuid) -> Result<(), DomainError>;
-
-    /// Creates a root-level home folder for a user during registration.
-    async fn create_home_folder(
-        &self,
-        user_id: Uuid,
-        name: String,
-    ) -> Result<FolderDto, DomainError>;
 
     /// Lists every folder in a subtree rooted at `folder_id` (inclusive),
     /// ordered by path.  Uses ltree `<@` — single GiST-indexed query.

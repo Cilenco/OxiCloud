@@ -1927,7 +1927,7 @@ impl DedupService {
                               OR b.orphaned_at < now() - ($2::int * interval '1 second'))
                          AND NOT EXISTS (
                              SELECT 1 FROM storage.chunk_manifests m
-                              WHERE m.chunk_hashes @> ARRAY[b.hash]
+                              WHERE m.chunk_hashes @> ARRAY[b.hash::text]
                          )
                          AND NOT EXISTS (
                              SELECT 1 FROM storage.files f
@@ -2776,12 +2776,22 @@ mod rechunk_integration_tests {
         Arc::new(pool)
     }
 
-    async fn seed_user(pool: &PgPool) -> Uuid {
-        sqlx::query("SELECT id FROM auth.users LIMIT 1")
-            .fetch_one(pool)
-            .await
-            .map(|r| r.get::<Uuid, _>("id"))
-            .expect("auth.users must be seeded (init-test-schema.sh)")
+    /// Returns `(user_id, drive_id)`. Post-D0 every internal user has a
+    /// default Personal drive (provisioned by `PersonalDriveLifecycleHook`
+    /// during init-test-schema.sh's user seeding); the JOIN below picks
+    /// the user-drive pair atomically so test fixtures can insert into
+    /// `storage.files` with both `user_id` and `drive_id` populated.
+    async fn seed_user(pool: &PgPool) -> (Uuid, Uuid) {
+        sqlx::query(
+            "SELECT u.id AS user_id, d.id AS drive_id
+               FROM auth.users u
+               JOIN storage.drives d ON d.default_for_user = u.id
+              LIMIT 1",
+        )
+        .fetch_one(pool)
+        .await
+        .map(|r| (r.get::<Uuid, _>("user_id"), r.get::<Uuid, _>("drive_id")))
+        .expect("auth.users + storage.drives must be seeded (init-test-schema.sh)")
     }
 
     /// Plain local backend in a fresh temp dir.
@@ -2848,7 +2858,7 @@ mod rechunk_integration_tests {
         .await
         .expect("insert legacy blob row");
 
-        let user_id = seed_user(pool).await;
+        let (user_id, drive_id) = seed_user(pool).await;
         let mut file_ids = Vec::new();
         for i in 0..n_files {
             let name = format!(
@@ -2856,11 +2866,12 @@ mod rechunk_integration_tests {
                 &Uuid::new_v4().to_string()[..8]
             );
             let id: Uuid = sqlx::query_scalar(
-                "INSERT INTO storage.files (name, user_id, blob_hash, size)
-                 VALUES ($1, $2, $3, $4) RETURNING id",
+                "INSERT INTO storage.files (name, user_id, drive_id, blob_hash, size)
+                 VALUES ($1, $2, $3, $4, $5) RETURNING id",
             )
             .bind(&name)
             .bind(user_id)
+            .bind(drive_id)
             .bind(&hash)
             .bind(data.len() as i64)
             .fetch_one(pool)
@@ -3121,12 +3132,20 @@ mod delta_upload_integration_tests {
         Arc::new(pool)
     }
 
-    async fn seed_user(pool: &PgPool) -> Uuid {
-        sqlx::query("SELECT id FROM auth.users LIMIT 1")
-            .fetch_one(pool)
-            .await
-            .map(|r| r.get::<Uuid, _>("id"))
-            .expect("auth.users must be seeded (init-test-schema.sh)")
+    /// Returns `(user_id, drive_id)` — same shape as the rechunk tests'
+    /// `seed_user`. Post-D0 every internal user has a default Personal
+    /// drive provisioned by `PersonalDriveLifecycleHook`.
+    async fn seed_user(pool: &PgPool) -> (Uuid, Uuid) {
+        sqlx::query(
+            "SELECT u.id AS user_id, d.id AS drive_id
+               FROM auth.users u
+               JOIN storage.drives d ON d.default_for_user = u.id
+              LIMIT 1",
+        )
+        .fetch_one(pool)
+        .await
+        .map(|r| (r.get::<Uuid, _>("user_id"), r.get::<Uuid, _>("drive_id")))
+        .expect("auth.users + storage.drives must be seeded (init-test-schema.sh)")
     }
 
     async fn local_svc(pool: &Arc<PgPool>, dir: &TempDir) -> DedupService {
@@ -3141,6 +3160,7 @@ mod delta_upload_integration_tests {
         svc: &DedupService,
         pool: &PgPool,
         user_id: Uuid,
+        drive_id: Uuid,
         data: &[u8],
         label: &str,
     ) -> (String, Vec<String>, Uuid) {
@@ -3159,14 +3179,15 @@ mod delta_upload_integration_tests {
         .expect("chunks");
 
         let file_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO storage.files (name, user_id, blob_hash, size)
-             VALUES ($1, $2, $3, $4) RETURNING id",
+            "INSERT INTO storage.files (name, user_id, drive_id, blob_hash, size)
+             VALUES ($1, $2, $3, $4, $5) RETURNING id",
         )
         .bind(format!(
             "rust-test-delta-{label}-{}",
             &Uuid::new_v4().to_string()[..8]
         ))
         .bind(user_id)
+        .bind(drive_id)
         .bind(&file_hash)
         .bind(data.len() as i64)
         .fetch_one(pool)
@@ -3226,13 +3247,13 @@ mod delta_upload_integration_tests {
         let pool = test_pool().await;
         let dir = TempDir::new().unwrap();
         let svc = local_svc(&pool, &dir).await;
-        let user = seed_user(&pool).await;
+        let (user, drive_id) = seed_user(&pool).await;
 
         // Owned content (multi-chunk), one foreign chunk (ref 1, no file
         // row for this user), one orphan (ref 0), one unknown hash.
         let data = content(3 * 1024 * 1024, 21);
         let (file_hash, owned_chunks, file_id) =
-            seed_owned_content(&svc, &pool, user, &data, "claim").await;
+            seed_owned_content(&svc, &pool, user, drive_id, &data, "claim").await;
         assert!(owned_chunks.len() >= 3, "3 MiB must split into ≥3 chunks");
 
         let foreign = blake3::hash(format!("foreign-{}", Uuid::new_v4()).as_bytes())
@@ -3316,12 +3337,12 @@ mod delta_upload_integration_tests {
         let pool = test_pool().await;
         let dir = TempDir::new().unwrap();
         let svc = local_svc(&pool, &dir).await;
-        let user = seed_user(&pool).await;
+        let (user, drive_id) = seed_user(&pool).await;
 
         // An owned chunk that the client redundantly re-uploads.
         let data = content(100 * 1024, 22);
         let (file_hash, owned_chunks, file_id) =
-            seed_owned_content(&svc, &pool, user, &data, "loose").await;
+            seed_owned_content(&svc, &pool, user, drive_id, &data, "loose").await;
         let owned_chunk_bytes = {
             let mut stream = svc.read_blob_stream(&file_hash).await.expect("stream");
             let mut out = Vec::new();
@@ -3373,7 +3394,7 @@ mod delta_upload_integration_tests {
         let pool = test_pool().await;
         let dir = TempDir::new().unwrap();
         let svc = local_svc(&pool, &dir).await;
-        let user = seed_user(&pool).await;
+        let (user, drive_id) = seed_user(&pool).await;
 
         // (A) An aged orphan (orphaned well past the grace window) with no
         //     references → must be collected (row + backing file).
@@ -3412,7 +3433,7 @@ mod delta_upload_integration_tests {
         //     stale ref_count must never delete referenced content.
         let data = content(3 * 1024 * 1024, 71);
         let (file_hash, owned_chunks, file_id) =
-            seed_owned_content(&svc, &pool, user, &data, "gc").await;
+            seed_owned_content(&svc, &pool, user, drive_id, &data, "gc").await;
         let referenced = owned_chunks[0].clone();
         sqlx::query(
             "UPDATE storage.blobs
@@ -3470,12 +3491,12 @@ mod delta_upload_integration_tests {
         let pool = test_pool().await;
         let dir = TempDir::new().unwrap();
         let svc = local_svc(&pool, &dir).await;
-        let user = seed_user(&pool).await;
+        let (user, drive_id) = seed_user(&pool).await;
 
         // Single-owner multi-chunk CDC file → its chunks are uniquely owned.
         let data = content(3 * 1024 * 1024, 91);
         let (file_hash, chunks, file_id) =
-            seed_owned_content(&svc, &pool, user, &data, "deref").await;
+            seed_owned_content(&svc, &pool, user, drive_id, &data, "deref").await;
         assert!(chunks.len() >= 3, "3 MiB must split into ≥3 chunks");
 
         // The delete_file_permanently sequence: drop the file row (PG trigger)
@@ -3540,11 +3561,11 @@ mod delta_upload_integration_tests {
         let pool = test_pool().await;
         let dir = TempDir::new().unwrap();
         let svc = local_svc(&pool, &dir).await;
-        let user = seed_user(&pool).await;
+        let (user, drive_id) = seed_user(&pool).await;
 
         let data = content(2 * 1024 * 1024 + 137, 24);
         let (file_hash, _chunks, file_id) =
-            seed_owned_content(&svc, &pool, user, &data, "verify").await;
+            seed_owned_content(&svc, &pool, user, drive_id, &data, "verify").await;
 
         let manifest: (Vec<String>, Vec<i64>) = sqlx::query_as(
             "SELECT chunk_hashes, chunk_sizes FROM storage.chunk_manifests WHERE file_hash = $1",

@@ -262,12 +262,20 @@ pub async fn list_favorites_resources(
                             path,
                             parent_id: row.parent_id.map(|u| u.to_string()),
                             owner_id: Some(row.owner_id.to_string()),
+                            // Listing handler — drive_id is informational
+                            // and the favorites row doesn't currently
+                            // SELECT it. Path-based lookups never enter
+                            // this code path.
+                            drive_id: uuid::Uuid::nil(),
                             created_at: row.resource_created_at.timestamp() as u64,
                             modified_at: row.modified_at.timestamp() as u64,
                             is_root: false,
                             icon_class: std::sync::Arc::from("fas fa-folder"),
                             icon_special_class: std::sync::Arc::from("folder-icon"),
                             category: std::sync::Arc::from("Folder"),
+                            // §14 provenance not selected by the favorites query.
+                            created_by: None,
+                            updated_by: None,
                         };
                         FavoritesResourceItemDto {
                             resource_type: ResourceTypeDto::Folder,
@@ -311,6 +319,9 @@ pub async fn list_favorites_resources(
                             sort_date: None,
                             content_hash,
                             etag,
+                            // §14 provenance not selected by the favorites query.
+                            created_by: None,
+                            updated_by: None,
                         };
                         FavoritesResourceItemDto {
                             resource_type: ResourceTypeDto::File,

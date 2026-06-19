@@ -101,11 +101,19 @@ impl FileReadPort for StubFileReadPort {
         Ok(StoragePath::from_string("/"))
     }
 
-    async fn get_parent_folder_id(&self, _path: &str) -> Result<String, DomainError> {
+    async fn get_parent_folder_id(
+        &self,
+        _path: &str,
+        _drive_id: Uuid,
+    ) -> Result<String, DomainError> {
         Ok("root".to_string())
     }
 
-    async fn get_folder_id_by_path(&self, _folder_path: &str) -> Result<String, DomainError> {
+    async fn get_folder_id_by_path(
+        &self,
+        _folder_path: &str,
+        _drive_id: Uuid,
+    ) -> Result<String, DomainError> {
         Ok("stub-folder-id".to_string())
     }
 
@@ -157,6 +165,7 @@ impl FileWritePort for StubFileWritePort {
         _content_type: String,
         _blob_hash: &str,
         _size: u64,
+        _caller_id: Uuid,
     ) -> Result<File, DomainError> {
         Ok(File::default())
     }
@@ -165,6 +174,7 @@ impl FileWritePort for StubFileWritePort {
         &self,
         _file_id: &str,
         _target_folder_id: Option<String>,
+        _caller_id: Uuid,
     ) -> Result<File, DomainError> {
         Ok(File::default())
     }
@@ -174,11 +184,17 @@ impl FileWritePort for StubFileWritePort {
         _file_id: &str,
         _target_folder_id: Option<String>,
         _new_name: Option<&str>,
+        _caller_id: Uuid,
     ) -> Result<File, DomainError> {
         Ok(File::default())
     }
 
-    async fn rename_file(&self, _file_id: &str, _new_name: &str) -> Result<File, DomainError> {
+    async fn rename_file(
+        &self,
+        _file_id: &str,
+        _new_name: &str,
+        _caller_id: Uuid,
+    ) -> Result<File, DomainError> {
         Ok(File::default())
     }
 
@@ -192,6 +208,7 @@ impl FileWritePort for StubFileWritePort {
         _blob_hash: &str,
         _size: u64,
         _modified_at: Option<i64>,
+        _caller_id: Uuid,
     ) -> Result<(String, i64), DomainError> {
         Ok((String::new(), 0))
     }
@@ -202,11 +219,12 @@ impl FileWritePort for StubFileWritePort {
         _folder_id: Option<String>,
         _content_type: String,
         _size: u64,
+        _caller_id: Uuid,
     ) -> Result<(File, PathBuf), DomainError> {
         Ok((File::default(), PathBuf::from("/tmp/dummy")))
     }
 
-    async fn move_to_trash(&self, _file_id: &str) -> Result<(), DomainError> {
+    async fn move_to_trash(&self, _file_id: &str, _caller_id: Uuid) -> Result<(), DomainError> {
         Ok(())
     }
 
@@ -214,6 +232,7 @@ impl FileWritePort for StubFileWritePort {
         &self,
         _file_id: &str,
         _original_path: &str,
+        _caller_id: Uuid,
     ) -> Result<(), DomainError> {
         Ok(())
     }
@@ -234,6 +253,7 @@ impl FolderRepository for StubFolderStoragePort {
         &self,
         _name: String,
         _parent_id: Option<String>,
+        _caller_id: Uuid,
     ) -> Result<Folder, DomainError> {
         Ok(Folder::default())
     }
@@ -242,7 +262,11 @@ impl FolderRepository for StubFolderStoragePort {
         Ok(Folder::default())
     }
 
-    async fn get_folder_by_path(&self, _storage_path: &StoragePath) -> Result<Folder, DomainError> {
+    async fn get_folder_by_path(
+        &self,
+        _storage_path: &StoragePath,
+        _drive_id: Uuid,
+    ) -> Result<Folder, DomainError> {
         Ok(Folder::default())
     }
 
@@ -279,7 +303,12 @@ impl FolderRepository for StubFolderStoragePort {
         Ok((Vec::new(), Some(0)))
     }
 
-    async fn rename_folder(&self, _id: &str, _new_name: String) -> Result<Folder, DomainError> {
+    async fn rename_folder(
+        &self,
+        _id: &str,
+        _new_name: String,
+        _caller_id: Uuid,
+    ) -> Result<Folder, DomainError> {
         Ok(Folder::default())
     }
 
@@ -287,6 +316,7 @@ impl FolderRepository for StubFolderStoragePort {
         &self,
         _id: &str,
         _new_parent_id: Option<&str>,
+        _caller_id: Uuid,
     ) -> Result<Folder, DomainError> {
         Ok(Folder::default())
     }
@@ -295,7 +325,11 @@ impl FolderRepository for StubFolderStoragePort {
         Ok(())
     }
 
-    async fn folder_exists(&self, _storage_path: &StoragePath) -> Result<bool, DomainError> {
+    async fn folder_exists(
+        &self,
+        _storage_path: &StoragePath,
+        _drive_id: Uuid,
+    ) -> Result<bool, DomainError> {
         Ok(false)
     }
 
@@ -303,7 +337,7 @@ impl FolderRepository for StubFolderStoragePort {
         Ok(StoragePath::from_string("/"))
     }
 
-    async fn move_to_trash(&self, _folder_id: &str) -> Result<(), DomainError> {
+    async fn move_to_trash(&self, _folder_id: &str, _caller_id: Uuid) -> Result<(), DomainError> {
         Ok(())
     }
 
@@ -311,20 +345,13 @@ impl FolderRepository for StubFolderStoragePort {
         &self,
         _folder_id: &str,
         _original_path: &str,
+        _caller_id: Uuid,
     ) -> Result<(), DomainError> {
         Ok(())
     }
 
     async fn delete_folder_permanently(&self, _folder_id: &str) -> Result<(), DomainError> {
         Ok(())
-    }
-
-    async fn create_home_folder(
-        &self,
-        _user_id: Uuid,
-        _name: String,
-    ) -> Result<Folder, DomainError> {
-        Ok(Folder::default())
     }
 }
 
@@ -397,7 +424,11 @@ impl FolderUseCase for StubFolderUseCase {
         Ok(FolderDto::default())
     }
 
-    async fn get_folder_by_path(&self, _path: &str) -> Result<FolderDto, DomainError> {
+    async fn get_folder_by_path(
+        &self,
+        _path: &str,
+        _drive_id: Uuid,
+    ) -> Result<FolderDto, DomainError> {
         Ok(FolderDto::default())
     }
 
@@ -455,14 +486,6 @@ impl FolderUseCase for StubFolderUseCase {
     ) -> Result<(), DomainError> {
         Ok(())
     }
-
-    async fn create_home_folder(
-        &self,
-        _user_id: Uuid,
-        _name: String,
-    ) -> Result<FolderDto, DomainError> {
-        Ok(FolderDto::default())
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -478,6 +501,7 @@ impl FileUploadUseCase for StubFileUploadUseCase {
         _folder_id: Option<String>,
         _content_type: String,
         _blob: StoredBlob,
+        _caller_id: Uuid,
     ) -> Result<FileDto, DomainError> {
         Ok(FileDto::default())
     }
@@ -485,9 +509,11 @@ impl FileUploadUseCase for StubFileUploadUseCase {
     async fn update_file_streaming(
         &self,
         _path: &str,
+        _drive_id: Uuid,
         _blob: StoredBlob,
         _content_type: &str,
         _modified_at: Option<i64>,
+        _caller_id: Uuid,
     ) -> Result<FileDto, DomainError> {
         Ok(FileDto::default())
     }
@@ -567,7 +593,7 @@ impl FileRetrievalUseCase for StubFileRetrievalUseCase {
         Ok(Box::new(empty_stream))
     }
 
-    async fn get_file_by_path(&self, _path: &str) -> Result<FileDto, DomainError> {
+    async fn get_file_by_path(&self, _path: &str, _drive_id: Uuid) -> Result<FileDto, DomainError> {
         Err(DomainError::not_found("File", "stub"))
     }
 

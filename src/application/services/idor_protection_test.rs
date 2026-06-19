@@ -101,7 +101,11 @@ impl FileReadPort for MockFileReadPort {
         unimplemented!()
     }
 
-    async fn get_parent_folder_id(&self, _path: &str) -> Result<String, DomainError> {
+    async fn get_parent_folder_id(
+        &self,
+        _path: &str,
+        _drive_id: Uuid,
+    ) -> Result<String, DomainError> {
         unimplemented!()
     }
 
@@ -127,7 +131,11 @@ impl FileReadPort for MockFileReadPort {
         Ok(0)
     }
 
-    async fn get_folder_id_by_path(&self, _folder_path: &str) -> Result<String, DomainError> {
+    async fn get_folder_id_by_path(
+        &self,
+        _folder_path: &str,
+        _drive_id: Uuid,
+    ) -> Result<String, DomainError> {
         unimplemented!()
     }
 
@@ -176,6 +184,7 @@ impl FileWritePort for MockFileWritePort {
         _content_type: String,
         _blob_hash: &str,
         _size: u64,
+        _caller_id: Uuid,
     ) -> Result<File, DomainError> {
         unimplemented!()
     }
@@ -184,6 +193,7 @@ impl FileWritePort for MockFileWritePort {
         &self,
         file_id: &str,
         _target_folder_id: Option<String>,
+        _caller_id: Uuid,
     ) -> Result<File, DomainError> {
         let files = self.files.lock().unwrap();
         files
@@ -192,7 +202,12 @@ impl FileWritePort for MockFileWritePort {
             .ok_or_else(|| DomainError::not_found("File", file_id.to_string()))
     }
 
-    async fn rename_file(&self, file_id: &str, _new_name: &str) -> Result<File, DomainError> {
+    async fn rename_file(
+        &self,
+        file_id: &str,
+        _new_name: &str,
+        _caller_id: Uuid,
+    ) -> Result<File, DomainError> {
         let files = self.files.lock().unwrap();
         files
             .get(file_id)
@@ -210,6 +225,7 @@ impl FileWritePort for MockFileWritePort {
         _blob_hash: &str,
         _size: u64,
         _modified_at: Option<i64>,
+        _caller_id: Uuid,
     ) -> Result<(String, i64), DomainError> {
         Ok((String::new(), 0))
     }
@@ -220,6 +236,7 @@ impl FileWritePort for MockFileWritePort {
         _folder_id: Option<String>,
         _content_type: String,
         _size: u64,
+        _caller_id: Uuid,
     ) -> Result<(File, PathBuf), DomainError> {
         unimplemented!()
     }
@@ -229,11 +246,12 @@ impl FileWritePort for MockFileWritePort {
         _file_id: &str,
         _target_folder_id: Option<String>,
         _new_name: Option<&str>,
+        _caller_id: Uuid,
     ) -> Result<File, DomainError> {
         unimplemented!()
     }
 
-    async fn move_to_trash(&self, _file_id: &str) -> Result<(), DomainError> {
+    async fn move_to_trash(&self, _file_id: &str, _caller_id: Uuid) -> Result<(), DomainError> {
         Ok(())
     }
 
@@ -241,6 +259,7 @@ impl FileWritePort for MockFileWritePort {
         &self,
         _file_id: &str,
         _original_path: &str,
+        _caller_id: Uuid,
     ) -> Result<(), DomainError> {
         Ok(())
     }

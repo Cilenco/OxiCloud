@@ -9,7 +9,6 @@ use crate::application::ports::file_ports::{FileRetrievalUseCase, FileUploadUseC
 use crate::common::di::AppState;
 use crate::common::mime_detect::filename_from_path;
 use crate::interfaces::errors::AppError;
-use crate::interfaces::middleware::auth::{AuthUser, CurrentUser};
 use crate::interfaces::upload_ingest::{
     discard_ingested, ingest_stream_to_cas, stream_body_to_path, stream_from_files,
 };
@@ -25,17 +24,17 @@ use crate::interfaces::upload_ingest::{
 pub async fn handle_nc_uploads(
     state: Arc<AppState>,
     req: Request<Body>,
-    user: AuthUser,
+    session: crate::interfaces::nextcloud::session::NcSession,
     upload_id: String,
     rest: String, // chunk name or ".file" or empty
 ) -> Result<Response<Body>, AppError> {
     let method = req.method().clone();
     match method.as_str() {
-        "MKCOL" => handle_mkcol(state, &user, &upload_id).await,
-        "PUT" => handle_put_chunk(state, req, &user, &upload_id, &rest).await,
-        "MOVE" => handle_assemble(state, req, &user, &upload_id).await,
-        "DELETE" => handle_abort(state, &user, &upload_id).await,
-        "PROPFIND" => handle_propfind_session(state, &user, &upload_id).await,
+        "MKCOL" => handle_mkcol(state, &session, &upload_id).await,
+        "PUT" => handle_put_chunk(state, req, &session, &upload_id, &rest).await,
+        "MOVE" => handle_assemble(state, req, &session, &upload_id).await,
+        "DELETE" => handle_abort(state, &session, &upload_id).await,
+        "PROPFIND" => handle_propfind_session(state, &session, &upload_id).await,
         _ => Ok(Response::builder()
             .status(StatusCode::METHOD_NOT_ALLOWED)
             .body(Body::empty())
@@ -60,9 +59,10 @@ pub async fn handle_nc_uploads(
 /// which matches NC server behaviour.
 async fn handle_propfind_session(
     state: Arc<AppState>,
-    user: &CurrentUser,
+    session: &crate::interfaces::nextcloud::session::NcSession,
     upload_id: &str,
 ) -> Result<Response<Body>, AppError> {
+    let user = &session.user;
     let nc = state
         .nextcloud
         .as_ref()
@@ -147,9 +147,10 @@ fn xml_escape(s: &str) -> String {
 /// MKCOL — create upload session directory.
 async fn handle_mkcol(
     state: Arc<AppState>,
-    user: &CurrentUser,
+    session: &crate::interfaces::nextcloud::session::NcSession,
     upload_id: &str,
 ) -> Result<Response<Body>, AppError> {
+    let user = &session.user;
     let nc = state
         .nextcloud
         .as_ref()
@@ -178,10 +179,11 @@ async fn handle_mkcol(
 async fn handle_put_chunk(
     state: Arc<AppState>,
     req: Request<Body>,
-    user: &CurrentUser,
+    session: &crate::interfaces::nextcloud::session::NcSession,
     upload_id: &str,
     chunk_name: &str,
 ) -> Result<Response<Body>, AppError> {
+    let user = &session.user;
     let nc = state
         .nextcloud
         .as_ref()
@@ -216,9 +218,10 @@ async fn handle_put_chunk(
 async fn handle_assemble(
     state: Arc<AppState>,
     req: Request<Body>,
-    user: &CurrentUser,
+    session: &crate::interfaces::nextcloud::session::NcSession,
     upload_id: &str,
 ) -> Result<Response<Body>, AppError> {
+    let user = &session.user;
     let nc = state
         .nextcloud
         .as_ref()
@@ -256,11 +259,19 @@ async fn handle_assemble(
     let file_service = &state.applications.file_retrieval_service;
     let folder_service = &state.applications.folder_service;
 
-    let internal_path = format!(
-        "My Folder - {}/{}",
-        user.username,
-        dest_subpath.trim_matches('/')
-    );
+    // Path-based lookups below scope by `drive_id`. The NC session's
+    // chroot is always populated for path-scoped handlers (see
+    // `NcSession::require_chroot`); the FolderDto carries `drive_id`
+    // post-D0.
+    let chroot = session.require_chroot()?;
+    let drive_id = chroot.drive_id;
+
+    // TODO(D1): read the caller's default-drive root folder name from
+    // `drives.root_folder_id` instead of hardcoding "Personal". The
+    // constant is correct for every default personal drive provisioned
+    // by the D0 lifecycle hook, but secondary drives (M2 backfill from
+    // SQL-created sibling root folders) keep their original name.
+    let internal_path = format!("Personal/{}", dest_subpath.trim_matches('/'));
 
     let filename = filename_from_path(&dest_subpath).to_string();
     let ingested = ingest_stream_to_cas(
@@ -275,11 +286,20 @@ async fn handle_assemble(
     let content_type = ingested.content_type.clone();
 
     // Check if file exists (update vs create).
-    let existing = file_service.get_file_by_path(&internal_path).await;
+    let existing = file_service
+        .get_file_by_path(&internal_path, drive_id)
+        .await;
 
     let etag: Option<String> = if existing.is_ok() {
         let dto = upload_service
-            .update_file_streaming(&internal_path, ingested.stored(), &content_type, oc_mtime)
+            .update_file_streaming(
+                &internal_path,
+                drive_id,
+                ingested.stored(),
+                &content_type,
+                oc_mtime,
+                user.id,
+            )
             .await
             .map_err(|e| AppError::internal_error(format!("Failed to update file: {}", e)))?;
 
@@ -291,15 +311,14 @@ async fn handle_assemble(
             Some((p, n)) => (p, n),
             None => ("", dest_subpath.as_str()),
         };
-        let parent_internal = format!(
-            "My Folder - {}/{}",
-            user.username,
-            parent_sub.trim_matches('/')
-        );
+        let parent_internal = format!("Personal/{}", parent_sub.trim_matches('/'));
         let parent_internal = parent_internal.trim_end_matches('/');
 
         use crate::application::ports::folder_ports::FolderUseCase;
-        let parent_folder = match folder_service.get_folder_by_path(parent_internal).await {
+        let parent_folder = match folder_service
+            .get_folder_by_path(parent_internal, drive_id)
+            .await
+        {
             Ok(folder) => folder,
             Err(e) => {
                 discard_ingested(&state.core.dedup_service, &ingested).await;
@@ -316,6 +335,7 @@ async fn handle_assemble(
                 Some(parent_folder.id),
                 content_type.to_string(),
                 ingested.stored(),
+                user.id,
             )
             .await
             .map_err(|e| AppError::internal_error(format!("Failed to create file: {}", e)))?;
@@ -344,9 +364,10 @@ async fn handle_assemble(
 /// DELETE — abort an upload session.
 async fn handle_abort(
     state: Arc<AppState>,
-    user: &CurrentUser,
+    session: &crate::interfaces::nextcloud::session::NcSession,
     upload_id: &str,
 ) -> Result<Response<Body>, AppError> {
+    let user = &session.user;
     let nc = state
         .nextcloud
         .as_ref()

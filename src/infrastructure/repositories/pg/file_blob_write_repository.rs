@@ -27,6 +27,10 @@ use crate::infrastructure::services::dedup_service::DedupService;
 pub struct FileBlobWriteRepository {
     pool: Arc<PgPool>,
     dedup: Arc<DedupService>,
+    /// Retained on the struct after D0-8 inlined parent-folder lookups
+    /// directly via SQL; kept for now so D0's diff stays scoped to drive_id
+    /// + provenance plumbing. Slated for removal in a follow-up cleanup.
+    #[allow(dead_code)]
     folder_repo: Arc<FolderDbRepository>,
     /// Shared handle to `FileBlobReadRepository`'s file_id → blob_hash
     /// cache. Content swaps and hard deletes invalidate the mapping here
@@ -111,9 +115,11 @@ impl FileBlobWriteRepository {
         modified_at: i64,
         owner_id: Option<Uuid>,
         blob_hash: String,
+        created_by: Option<Uuid>,
+        updated_by: Option<Uuid>,
     ) -> Result<File, DomainError> {
         let storage_path = Self::make_file_path(folder_path.as_deref(), &name);
-        File::with_timestamps_and_blob_hash(
+        File::with_timestamps_blob_hash_and_provenance(
             id,
             name,
             storage_path,
@@ -124,14 +130,33 @@ impl FileBlobWriteRepository {
             modified_at as u64,
             owner_id,
             blob_hash,
+            created_by,
+            updated_by,
         )
         .map_err(|e| DomainError::internal_error("FileBlobWrite", format!("entity: {e}")))
     }
 
-    /// Derive user_id from the parent folder, or error if folder_id is None.
-    async fn resolve_user_id(&self, folder_id: Option<&str>) -> Result<Uuid, DomainError> {
+    /// Derive `(user_id, drive_id)` from the parent folder. Both are
+    /// needed during the D0 dual-write window: `user_id` for the legacy
+    /// column (dropped in D7) and `drive_id` for the new owning-drive
+    /// reference.
+    async fn resolve_owner_and_drive(
+        &self,
+        folder_id: Option<&str>,
+    ) -> Result<(Uuid, Uuid), DomainError> {
         match folder_id {
-            Some(fid) => self.folder_repo.get_folder_user_id(fid).await,
+            Some(fid) => {
+                let row: Option<(Uuid, Uuid)> = sqlx::query_as::<_, (Uuid, Uuid)>(
+                    "SELECT user_id, drive_id FROM storage.folders WHERE id = $1::uuid",
+                )
+                .bind(fid)
+                .fetch_optional(self.pool.as_ref())
+                .await
+                .map_err(|e| {
+                    DomainError::internal_error("FileBlobWrite", format!("parent lookup: {e}"))
+                })?;
+                row.ok_or_else(|| DomainError::not_found("Folder", fid))
+            }
             None => Err(DomainError::internal_error(
                 "FileBlobWrite",
                 "folder_id is required to determine file owner",
@@ -150,12 +175,18 @@ impl FileBlobWriteRepository {
     /// `(new_hash, updated_at_epoch)` on success — the effective timestamp
     /// is returned so callers can rebuild the fresh entity without
     /// re-reading the row.
+    ///
+    /// §14: `updated_by = $5` (caller_id). The caller mutated this
+    /// row — not the row's owner. D2 shared drives let non-owners
+    /// overwrite content; the previous `updated_by = f.user_id` would
+    /// have silently recorded the wrong principal.
     async fn swap_blob_hash(
         &self,
         file_id: &str,
         new_hash: &str,
         new_size: i64,
         modified_at: Option<i64>,
+        caller_id: Uuid,
     ) -> Result<(String, i64), DomainError> {
         // Atomic CTE: capture old hash then update in one round-trip, no TOCTOU.
         // Deadlock victims (40P01) retry before the compensation below runs —
@@ -168,7 +199,8 @@ impl FileBlobWriteRepository {
                 )
                 UPDATE storage.files f
                    SET blob_hash = $1, size = $2,
-                       updated_at = COALESCE(to_timestamp($4), NOW())
+                       updated_at = COALESCE(to_timestamp($4), NOW()),
+                       updated_by = $5
                   FROM old
                  WHERE f.id = old.id
                 RETURNING old.blob_hash, EXTRACT(EPOCH FROM f.updated_at)::bigint
@@ -178,6 +210,7 @@ impl FileBlobWriteRepository {
             .bind(new_size)
             .bind(file_id)
             .bind(modified_at.map(|t| t as f64))
+            .bind(caller_id)
             .fetch_optional(self.pool.as_ref())
         })
         .await
@@ -223,6 +256,12 @@ impl FileBlobWriteRepository {
     /// Register a file row pointing at a blob already stored in the chunk
     /// store (the upload-ingest layer streamed the content in). Consumes the
     /// caller's blob reference: any failure releases it before returning.
+    ///
+    /// §14: `created_by = $7 = updated_by = caller_id` — authorship
+    /// belongs to the principal performing the upload, not to the parent
+    /// folder's owner. In D2 shared drives a non-owner member can upload
+    /// into a folder Alice owns; binding `parent.user_id` would have
+    /// silently recorded Alice as the author.
     async fn save_file_with_blob_impl(
         &self,
         name: String,
@@ -230,6 +269,7 @@ impl FileBlobWriteRepository {
         content_type: String,
         blob_hash: &str,
         size: u64,
+        caller_id: Uuid,
     ) -> Result<File, DomainError> {
         // Root files have no parent folder to derive an owner from — keep the
         // previous resolve_user_id(None) contract (release the ref, error out).
@@ -260,19 +300,24 @@ impl FileBlobWriteRepository {
         // (a retried INSERT can legitimately lose to a concurrent identical
         // upload).
         let result = retry_on_deadlock("files.insert", || {
-            sqlx::query_as::<_, (String, Uuid, String, i64, i64)>(
+            sqlx::query_as::<_, (String, Uuid, String, i64, i64, Option<Uuid>, Option<Uuid>)>(
                 r#"
                 WITH parent AS (
-                    SELECT id, user_id, path FROM storage.folders WHERE id = $2::uuid
+                    SELECT id, user_id, drive_id, path FROM storage.folders WHERE id = $2::uuid
                 )
                 INSERT INTO storage.files
-                    (name, folder_id, user_id, blob_hash, size, mime_type, category_order)
-                SELECT $1, parent.id, parent.user_id, $3, $4, $5, $6 FROM parent
+                    (name, folder_id, user_id, drive_id, blob_hash, size,
+                     mime_type, category_order, created_by, updated_by)
+                SELECT $1, parent.id, parent.user_id, parent.drive_id, $3, $4,
+                       $5, $6, $7, $7
+                  FROM parent
                 RETURNING id::text,
                           user_id,
                           (SELECT path FROM parent),
                           EXTRACT(EPOCH FROM created_at)::bigint,
-                          EXTRACT(EPOCH FROM updated_at)::bigint
+                          EXTRACT(EPOCH FROM updated_at)::bigint,
+                          created_by,
+                          updated_by
                 "#,
             )
             .bind(&name)
@@ -281,44 +326,46 @@ impl FileBlobWriteRepository {
             .bind(size as i64)
             .bind(&content_type)
             .bind(category_order_for(&name, &content_type))
+            .bind(caller_id)
             .fetch_optional(self.pool.as_ref())
         })
         .await;
 
-        let (id, user_id, folder_path, created_at, updated_at) = match result {
-            Ok(Some(row)) => row,
-            Ok(None) => {
-                if let Err(rollback_err) = self.dedup.remove_reference(blob_hash).await {
-                    tracing::error!(
-                        "Blob orphaned after missing parent folder — hash: {}, err: {}",
-                        &blob_hash[..12],
-                        rollback_err
-                    );
+        let (id, user_id, folder_path, created_at, updated_at, created_by, updated_by) =
+            match result {
+                Ok(Some(row)) => row,
+                Ok(None) => {
+                    if let Err(rollback_err) = self.dedup.remove_reference(blob_hash).await {
+                        tracing::error!(
+                            "Blob orphaned after missing parent folder — hash: {}, err: {}",
+                            &blob_hash[..12],
+                            rollback_err
+                        );
+                    }
+                    return Err(DomainError::not_found("Folder", fid));
                 }
-                return Err(DomainError::not_found("Folder", fid));
-            }
-            Err(e) => {
-                if let Err(rollback_err) = self.dedup.remove_reference(blob_hash).await {
-                    tracing::error!(
-                        "Blob orphaned after failed INSERT — hash: {}, err: {}",
-                        &blob_hash[..12],
-                        rollback_err
-                    );
-                }
-                if let sqlx::Error::Database(ref db_err) = e
-                    && db_err.code().as_deref() == Some("23505")
-                {
-                    return Err(DomainError::already_exists(
-                        "File",
-                        format!("'{name}' already exists in this folder"),
+                Err(e) => {
+                    if let Err(rollback_err) = self.dedup.remove_reference(blob_hash).await {
+                        tracing::error!(
+                            "Blob orphaned after failed INSERT — hash: {}, err: {}",
+                            &blob_hash[..12],
+                            rollback_err
+                        );
+                    }
+                    if let sqlx::Error::Database(ref db_err) = e
+                        && db_err.code().as_deref() == Some("23505")
+                    {
+                        return Err(DomainError::already_exists(
+                            "File",
+                            format!("'{name}' already exists in this folder"),
+                        ));
+                    }
+                    return Err(DomainError::internal_error(
+                        "FileBlobWrite",
+                        format!("insert: {e}"),
                     ));
                 }
-                return Err(DomainError::internal_error(
-                    "FileBlobWrite",
-                    format!("insert: {e}"),
-                ));
-            }
-        };
+            };
 
         tracing::info!(
             "📡 STREAMING WRITE: {} ({} bytes, hash: {})",
@@ -338,6 +385,8 @@ impl FileBlobWriteRepository {
             updated_at,
             Some(user_id),
             blob_hash.to_string(),
+            created_by,
+            updated_by,
         )
     }
 }
@@ -350,8 +399,9 @@ impl FileWritePort for FileBlobWriteRepository {
         content_type: String,
         blob_hash: &str,
         size: u64,
+        caller_id: Uuid,
     ) -> Result<File, DomainError> {
-        self.save_file_with_blob_impl(name, folder_id, content_type, blob_hash, size)
+        self.save_file_with_blob_impl(name, folder_id, content_type, blob_hash, size, caller_id)
             .await
     }
 
@@ -359,20 +409,50 @@ impl FileWritePort for FileBlobWriteRepository {
         &self,
         file_id: &str,
         target_folder_id: Option<String>,
+        caller_id: Uuid,
     ) -> Result<File, DomainError> {
-        // If moving to a different folder, get the new user_id (must be same user)
-        let row = sqlx::query_as::<_, (String, String, Option<String>, i64, String, i64, i64)>(
+        // If moving to a different folder, get the new user_id (must be same user).
+        //
+        // §14: `updated_by = $3` (caller_id) — the caller mutated this
+        // row. The previous COALESCE derived authorship from the
+        // destination folder's owner, which is wrong: dest's user_id
+        // has no claim to authorship of the file's content. D2 shared
+        // drives surface this most starkly (Alice moves Bob's file
+        // into Charlie's drive — `updated_by` must be Alice).
+        let row = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                Option<String>,
+                i64,
+                String,
+                i64,
+                i64,
+                Option<Uuid>,
+                Option<Uuid>,
+            ),
+        >(
             r#"
-            UPDATE storage.files
-               SET folder_id = $1::uuid, updated_at = NOW()
-             WHERE id = $2::uuid AND NOT is_trashed
-            RETURNING id::text, name, folder_id::text, size, mime_type,
-                      EXTRACT(EPOCH FROM created_at)::bigint,
-                      EXTRACT(EPOCH FROM updated_at)::bigint
+            WITH dest AS (
+                SELECT user_id, drive_id FROM storage.folders WHERE id = $1::uuid
+            )
+            UPDATE storage.files f
+               SET folder_id = $1::uuid,
+                   user_id   = COALESCE((SELECT user_id  FROM dest), f.user_id),
+                   drive_id  = COALESCE((SELECT drive_id FROM dest), f.drive_id),
+                   updated_at = NOW(),
+                   updated_by = $3
+             WHERE f.id = $2::uuid AND NOT f.is_trashed
+            RETURNING f.id::text, f.name, f.folder_id::text, f.size, f.mime_type,
+                      EXTRACT(EPOCH FROM f.created_at)::bigint,
+                      EXTRACT(EPOCH FROM f.updated_at)::bigint,
+                      f.created_by, f.updated_by
             "#,
         )
         .bind(&target_folder_id)
         .bind(file_id)
+        .bind(caller_id)
         .fetch_optional(self.pool.as_ref())
         .await
         .map_err(|e| DomainError::internal_error("FileBlobWrite", format!("move: {e}")))?
@@ -390,6 +470,8 @@ impl FileWritePort for FileBlobWriteRepository {
             row.6,
             None,
             String::new(),
+            row.7,
+            row.8,
         )
     }
 
@@ -398,9 +480,16 @@ impl FileWritePort for FileBlobWriteRepository {
         file_id: &str,
         target_folder_id: Option<String>,
         new_name: Option<&str>,
+        caller_id: Uuid,
     ) -> Result<File, DomainError> {
         // Atomic CTE: read source file → insert new row with same blob_hash → increment ref_count.
         // Single round-trip; blob content is NOT copied (dedup makes this zero-copy).
+        //
+        // §14: `created_by = $4 = updated_by = caller_id` — the caller
+        // authored this copy. The previous binding used
+        // `dest_folder.user_id` which silently recorded the destination
+        // folder's owner as the author when Adam copied a file into
+        // Alice's folder.
         let target_fid = target_folder_id.clone();
         let rename_to = new_name.map(|s| s.to_string());
 
@@ -416,6 +505,8 @@ impl FileWritePort for FileBlobWriteRepository {
                     i64,
                     i64,
                     String,
+                    Option<Uuid>,
+                    Option<Uuid>,
                 ),
             >(
                 r#"
@@ -424,20 +515,39 @@ impl FileWritePort for FileBlobWriteRepository {
                       FROM storage.files
                      WHERE id = $1::uuid AND NOT is_trashed
                 ),
+                -- The destination folder may differ from the source's
+                -- folder (when $2 is set); derive drive_id from the
+                -- DESTINATION so cross-drive copies land in the right
+                -- drive. Files in personal drives only copy within the
+                -- same drive today, but the join makes the migration
+                -- future-proof for D2's cross-drive copy story.
+                dest_folder AS (
+                    SELECT id, user_id, drive_id
+                      FROM storage.folders
+                     WHERE id = COALESCE($2::uuid,
+                                         (SELECT folder_id FROM src))
+                ),
                 new_file AS (
-                    INSERT INTO storage.files (name, folder_id, user_id, blob_hash, size, mime_type, category_order)
-                    SELECT COALESCE($3::text, name),
-                           COALESCE($2::uuid, folder_id),
-                           user_id,
-                           blob_hash,
-                           size,
-                           mime_type,
-                           category_order
-                      FROM src
+                    INSERT INTO storage.files
+                        (name, folder_id, user_id, drive_id, blob_hash, size,
+                         mime_type, category_order, created_by, updated_by)
+                    SELECT COALESCE($3::text, src.name),
+                           dest_folder.id,
+                           dest_folder.user_id,
+                           dest_folder.drive_id,
+                           src.blob_hash,
+                           src.size,
+                           src.mime_type,
+                           src.category_order,
+                           $4,
+                           $4
+                      FROM src, dest_folder
                     RETURNING id::text, name, folder_id::text, size, mime_type,
                               EXTRACT(EPOCH FROM created_at)::bigint,
                               EXTRACT(EPOCH FROM updated_at)::bigint,
-                              blob_hash
+                              blob_hash,
+                              created_by,
+                              updated_by
                 )
                 SELECT * FROM new_file
                 "#,
@@ -445,6 +555,7 @@ impl FileWritePort for FileBlobWriteRepository {
             .bind(file_id)
             .bind(&target_fid)
             .bind(&rename_to)
+            .bind(caller_id)
             .fetch_optional(self.pool.as_ref())
         })
         .await
@@ -490,22 +601,45 @@ impl FileWritePort for FileBlobWriteRepository {
             row.6,
             None,
             row.7,
+            row.8,
+            row.9,
         )
     }
 
-    async fn rename_file(&self, file_id: &str, new_name: &str) -> Result<File, DomainError> {
-        let row = sqlx::query_as::<_, (String, String, Option<String>, i64, String, i64, i64)>(
+    async fn rename_file(
+        &self,
+        file_id: &str,
+        new_name: &str,
+        caller_id: Uuid,
+    ) -> Result<File, DomainError> {
+        // §14: `updated_by = $3` (caller_id), see move_file.
+        let row = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                Option<String>,
+                i64,
+                String,
+                i64,
+                i64,
+                Option<Uuid>,
+                Option<Uuid>,
+            ),
+        >(
             r#"
             UPDATE storage.files
-               SET name = $1, updated_at = NOW()
+               SET name = $1, updated_at = NOW(), updated_by = $3
              WHERE id = $2::uuid AND NOT is_trashed
             RETURNING id::text, name, folder_id::text, size, mime_type,
                       EXTRACT(EPOCH FROM created_at)::bigint,
-                      EXTRACT(EPOCH FROM updated_at)::bigint
+                      EXTRACT(EPOCH FROM updated_at)::bigint,
+                      created_by, updated_by
             "#,
         )
         .bind(new_name)
         .bind(file_id)
+        .bind(caller_id)
         .fetch_optional(self.pool.as_ref())
         .await
         .map_err(|e| {
@@ -530,6 +664,8 @@ impl FileWritePort for FileBlobWriteRepository {
             row.6,
             None,
             String::new(),
+            row.7,
+            row.8,
         )
     }
 
@@ -559,12 +695,13 @@ impl FileWritePort for FileBlobWriteRepository {
         blob_hash: &str,
         size: u64,
         modified_at: Option<i64>,
+        caller_id: Uuid,
     ) -> Result<(String, i64), DomainError> {
         // The content was already ingested into the chunk store by the
         // upload-ingest layer; swap_blob_hash consumes its reference and
         // releases it on failure.
         let swapped = self
-            .swap_blob_hash(file_id, blob_hash, size as i64, modified_at)
+            .swap_blob_hash(file_id, blob_hash, size as i64, modified_at, caller_id)
             .await?;
         // The file now maps to a different blob — drop the read-side cache
         // entry so streaming downloads cannot serve the previous content
@@ -579,30 +716,41 @@ impl FileWritePort for FileBlobWriteRepository {
         folder_id: Option<String>,
         content_type: String,
         size: u64,
+        caller_id: Uuid,
     ) -> Result<(File, PathBuf), DomainError> {
-        let user_id = self.resolve_user_id(folder_id.as_deref()).await?;
+        let (user_id, drive_id) = self.resolve_owner_and_drive(folder_id.as_deref()).await?;
 
         // For deferred registration we use a placeholder hash.
         // The write-behind cache will call update_file_content later.
         let placeholder_hash = "0000000000000000000000000000000000000000000000000000000000000000";
 
+        // §14: `created_by = $9 = updated_by = caller_id`. The legacy
+        // `user_id` column (dropped in D7) stays bound to the parent
+        // folder's owner; only the two provenance columns flip to the
+        // caller — see save_file_with_blob_impl.
         let row = retry_on_deadlock("files.insert_deferred", || {
-            sqlx::query_as::<_, (String, i64, i64)>(
+            sqlx::query_as::<_, (String, i64, i64, Option<Uuid>, Option<Uuid>)>(
                 r#"
-                INSERT INTO storage.files (name, folder_id, user_id, blob_hash, size, mime_type, category_order)
-                VALUES ($1, $2::uuid, $3, $4, $5, $6, $7)
+                INSERT INTO storage.files
+                    (name, folder_id, user_id, drive_id, blob_hash, size,
+                     mime_type, category_order, created_by, updated_by)
+                VALUES ($1, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $9)
                 RETURNING id::text,
                           EXTRACT(EPOCH FROM created_at)::bigint,
-                          EXTRACT(EPOCH FROM updated_at)::bigint
+                          EXTRACT(EPOCH FROM updated_at)::bigint,
+                          created_by,
+                          updated_by
                 "#,
             )
             .bind(&name)
             .bind(&folder_id)
             .bind(user_id)
+            .bind(drive_id)
             .bind(placeholder_hash)
             .bind(size as i64)
             .bind(&content_type)
             .bind(category_order_for(&name, &content_type))
+            .bind(caller_id)
             .fetch_one(self.pool.as_ref())
         })
         .await
@@ -620,6 +768,8 @@ impl FileWritePort for FileBlobWriteRepository {
             row.2,
             Some(user_id),
             String::new(),
+            row.3,
+            row.4,
         )?;
 
         // The target_path is not meaningful for blob storage (content goes to .blobs/)
@@ -631,18 +781,21 @@ impl FileWritePort for FileBlobWriteRepository {
 
     // ── Trash operations ──
 
-    async fn move_to_trash(&self, file_id: &str) -> Result<(), DomainError> {
+    async fn move_to_trash(&self, file_id: &str, caller_id: Uuid) -> Result<(), DomainError> {
+        // §14: `updated_by = $2` (caller_id), see move_file.
         let result = sqlx::query(
             r#"
             UPDATE storage.files
                SET is_trashed = TRUE,
                    trashed_at = NOW(),
                    original_folder_id = folder_id,
-                   updated_at = NOW()
+                   updated_at = NOW(),
+                   updated_by = $2
              WHERE id = $1::uuid AND NOT is_trashed
             "#,
         )
         .bind(file_id)
+        .bind(caller_id)
         .execute(self.pool.as_ref())
         .await
         .map_err(|e| DomainError::internal_error("FileBlobWrite", format!("trash: {e}")))?;
@@ -657,7 +810,9 @@ impl FileWritePort for FileBlobWriteRepository {
         &self,
         file_id: &str,
         _original_path: &str,
+        caller_id: Uuid,
     ) -> Result<(), DomainError> {
+        // §14: `updated_by = $2` (caller_id), see move_file.
         let result = sqlx::query(
             r#"
             UPDATE storage.files
@@ -665,11 +820,13 @@ impl FileWritePort for FileBlobWriteRepository {
                    trashed_at = NULL,
                    folder_id = COALESCE(original_folder_id, folder_id),
                    original_folder_id = NULL,
-                   updated_at = NOW()
+                   updated_at = NOW(),
+                   updated_by = $2
              WHERE id = $1::uuid AND is_trashed
             "#,
         )
         .bind(file_id)
+        .bind(caller_id)
         .execute(self.pool.as_ref())
         .await
         .map_err(|e| DomainError::internal_error("FileBlobWrite", format!("restore: {e}")))?;

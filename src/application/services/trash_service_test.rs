@@ -139,7 +139,7 @@ where
                         )
                     })?;
                 self.file_write_port
-                    .move_to_trash(item_id)
+                    .move_to_trash(item_id, user_id)
                     .await
                     .map_err(|e| {
                         DomainError::new(
@@ -181,7 +181,7 @@ where
                         )
                     })?;
                 self.folder_storage_port
-                    .move_to_trash(item_id)
+                    .move_to_trash(item_id, user_id)
                     .await
                     .map_err(|e| {
                         DomainError::new(
@@ -215,7 +215,7 @@ where
                         let original_path = item.original_path().to_string();
                         let result = self
                             .file_write_port
-                            .restore_from_trash(&file_id, &original_path)
+                            .restore_from_trash(&file_id, &original_path, user_id)
                             .await;
                         if let Err(e) = result
                             && !format!("{}", e).contains("not found")
@@ -232,7 +232,7 @@ where
                         let original_path = item.original_path().to_string();
                         let result = self
                             .folder_storage_port
-                            .restore_from_trash(&folder_id, &original_path)
+                            .restore_from_trash(&folder_id, &original_path, user_id)
                             .await;
                         if let Err(e) = result
                             && !format!("{}", e).contains("not found")
@@ -500,13 +500,18 @@ impl FileReadPort for MockFileRepository {
         unimplemented!()
     }
 
-    async fn get_parent_folder_id(&self, _path: &str) -> std::result::Result<String, DomainError> {
+    async fn get_parent_folder_id(
+        &self,
+        _path: &str,
+        _drive_id: Uuid,
+    ) -> std::result::Result<String, DomainError> {
         unimplemented!()
     }
 
     async fn get_folder_id_by_path(
         &self,
         _folder_path: &str,
+        _drive_id: Uuid,
     ) -> std::result::Result<String, DomainError> {
         unimplemented!()
     }
@@ -561,6 +566,7 @@ impl FileWritePort for MockFileRepository {
         _content_type: String,
         _blob_hash: &str,
         _size: u64,
+        _caller_id: Uuid,
     ) -> std::result::Result<File, DomainError> {
         unimplemented!()
     }
@@ -569,6 +575,7 @@ impl FileWritePort for MockFileRepository {
         &self,
         _file_id: &str,
         _target_folder_id: Option<String>,
+        _caller_id: Uuid,
     ) -> std::result::Result<File, DomainError> {
         unimplemented!()
     }
@@ -577,6 +584,7 @@ impl FileWritePort for MockFileRepository {
         &self,
         _file_id: &str,
         _new_name: &str,
+        _caller_id: Uuid,
     ) -> std::result::Result<File, DomainError> {
         unimplemented!()
     }
@@ -591,6 +599,7 @@ impl FileWritePort for MockFileRepository {
         _blob_hash: &str,
         _size: u64,
         _modified_at: Option<i64>,
+        _caller_id: Uuid,
     ) -> std::result::Result<(String, i64), DomainError> {
         Ok((String::new(), 0))
     }
@@ -601,6 +610,7 @@ impl FileWritePort for MockFileRepository {
         _folder_id: Option<String>,
         _content_type: String,
         _size: u64,
+        _caller_id: Uuid,
     ) -> std::result::Result<(File, PathBuf), DomainError> {
         unimplemented!()
     }
@@ -610,11 +620,16 @@ impl FileWritePort for MockFileRepository {
         _file_id: &str,
         _target_folder_id: Option<String>,
         _new_name: Option<&str>,
+        _caller_id: Uuid,
     ) -> std::result::Result<File, DomainError> {
         unimplemented!()
     }
 
-    async fn move_to_trash(&self, id: &str) -> std::result::Result<(), DomainError> {
+    async fn move_to_trash(
+        &self,
+        id: &str,
+        _caller_id: Uuid,
+    ) -> std::result::Result<(), DomainError> {
         let mut files = self.files.lock().unwrap();
         let mut trashed = self.trashed_files.lock().unwrap();
 
@@ -630,6 +645,7 @@ impl FileWritePort for MockFileRepository {
         &self,
         id: &str,
         _original_path: &str,
+        _caller_id: Uuid,
     ) -> std::result::Result<(), DomainError> {
         let mut files = self.files.lock().unwrap();
         let mut trashed = self.trashed_files.lock().unwrap();
@@ -693,6 +709,7 @@ impl FolderRepository for MockFolderRepository {
         &self,
         _name: String,
         _parent_id: Option<String>,
+        _caller_id: Uuid,
     ) -> std::result::Result<Folder, DomainError> {
         unimplemented!()
     }
@@ -709,6 +726,7 @@ impl FolderRepository for MockFolderRepository {
     async fn get_folder_by_path(
         &self,
         _storage_path: &StoragePath,
+        _drive_id: Uuid,
     ) -> std::result::Result<Folder, DomainError> {
         unimplemented!()
     }
@@ -753,6 +771,7 @@ impl FolderRepository for MockFolderRepository {
         &self,
         _id: &str,
         _new_name: String,
+        _caller_id: Uuid,
     ) -> std::result::Result<Folder, DomainError> {
         unimplemented!()
     }
@@ -761,6 +780,7 @@ impl FolderRepository for MockFolderRepository {
         &self,
         _id: &str,
         _new_parent_id: Option<&str>,
+        _caller_id: Uuid,
     ) -> std::result::Result<Folder, DomainError> {
         unimplemented!()
     }
@@ -772,6 +792,7 @@ impl FolderRepository for MockFolderRepository {
     async fn folder_exists(
         &self,
         _storage_path: &StoragePath,
+        _drive_id: Uuid,
     ) -> std::result::Result<bool, DomainError> {
         Ok(false)
     }
@@ -780,7 +801,11 @@ impl FolderRepository for MockFolderRepository {
         Ok(StoragePath::from_string("/"))
     }
 
-    async fn move_to_trash(&self, id: &str) -> std::result::Result<(), DomainError> {
+    async fn move_to_trash(
+        &self,
+        id: &str,
+        _caller_id: Uuid,
+    ) -> std::result::Result<(), DomainError> {
         let mut folders = self.folders.lock().unwrap();
         let mut trashed = self.trashed_folders.lock().unwrap();
 
@@ -796,6 +821,7 @@ impl FolderRepository for MockFolderRepository {
         &self,
         id: &str,
         _original_path: &str,
+        _caller_id: Uuid,
     ) -> std::result::Result<(), DomainError> {
         let mut folders = self.folders.lock().unwrap();
         let mut trashed = self.trashed_folders.lock().unwrap();
@@ -821,14 +847,6 @@ impl FolderRepository for MockFolderRepository {
                 format!("Folder {} not found in trash", id),
             ))
         }
-    }
-
-    async fn create_home_folder(
-        &self,
-        _user_id: Uuid,
-        _name: String,
-    ) -> std::result::Result<Folder, DomainError> {
-        Ok(Folder::default())
     }
 }
 

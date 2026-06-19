@@ -103,7 +103,8 @@ impl<B> MakeSpan<B> for ClientIpMakeSpan {
             method     = %request.method(),
             uri        = %request.uri().path(),
             user_id    = tracing::field::Empty,
-            // The Nextcloud chroot folder id, set by `basic_auth_middleware`.
+
+            // The Nextcloud chroot folder id, set by `basic_auth_middleware` (will be the Drive Id in the future).
             chroot_id  = tracing::field::Empty,
         )
     }

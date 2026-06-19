@@ -199,7 +199,7 @@ impl PeopleService {
                 })
             })
             .collect();
-        out.sort_by(|a, b| b.face_count.cmp(&a.face_count));
+        out.sort_by_key(|p| std::cmp::Reverse(p.face_count));
         Ok(out)
     }
 
