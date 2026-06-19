@@ -368,8 +368,8 @@
     --color-item-active: light-dark(#f8d2ae, #5a5047);
     --color-item-selected: light-dark(#fff8f6, #39281a);
     --color-item-hover-accent: light-dark(#fff0ec, #3d342c);
-    --color-item-hover-blue: #f0f8ff;
-    --color-item-hover-sky: #e0f2fe;
+    --color-item-hover-blue: light-dark(#f0f8ff, #18293f);
+    --color-item-hover-sky: light-dark(#e0f2fe, #103048);
 
     /* Sidebar — already dark-leaning in both modes; dark mode goes deeper. */
     --color-sidebar-bg-from: light-dark(#2a3042, #0f172a);

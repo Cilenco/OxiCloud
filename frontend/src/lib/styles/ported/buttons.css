@@ -18,7 +18,7 @@
 
 .btn-primary {
     background: var(--color-accent-gradient);
-    color: var(--color-danger-text);
+    color: var(--color-on-accent);
     box-shadow: 0 4px 15px var(--color-accent-shadow);
 }
 
