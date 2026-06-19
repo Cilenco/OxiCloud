@@ -175,30 +175,44 @@
     }
 }
 
-/* Colored icons per section */
-.nav-item:nth-child(1) i,
-.nav-item:nth-child(1) .oxi-icon {
-    color: var(--color-cal-1);
-} /* Files - orange */
-.nav-item:nth-child(2) i,
-.nav-item:nth-child(2) .oxi-icon {
+/* Colored icons per section.
+   Keyed off the stable `data-section` attribute (set in AppShell's LINKS), NOT
+   DOM order — adding/reordering nav items can no longer desync the colours from
+   their labels. Each section maps to one curated calendar-dot hue (the same
+   --color-cal-* family used elsewhere), spread around the wheel so they read as
+   a set: the two share directions are sibling blues, music is purple to match
+   its gradient, and trash is red as a soft "destructive" affordance. */
+.nav-item[data-section="files"] i,
+.nav-item[data-section="files"] .oxi-icon {
     color: var(--color-cal-2);
-} /* Shared - blue */
-.nav-item:nth-child(3) i,
-.nav-item:nth-child(3) .oxi-icon {
-    color: var(--color-cal-3);
-} /* Recent - teal */
-.nav-item:nth-child(4) i,
-.nav-item:nth-child(4) .oxi-icon {
-    color: var(--color-cal-4);
-} /* Favorites - gold */
-.nav-item:nth-child(5) i,
-.nav-item:nth-child(5) .oxi-icon {
-    color: var(--color-cal-5);
-} /* Photos - pink */
-.nav-item:nth-child(6) i,
-.nav-item:nth-child(6) .oxi-icon {
+} /* Files - amber */
+.nav-item[data-section="shared"] i,
+.nav-item[data-section="shared"] .oxi-icon {
+    color: var(--color-cal-7);
+} /* Shared (outbound) - sky */
+.nav-item[data-section="shared-with-me"] i,
+.nav-item[data-section="shared-with-me"] .oxi-icon {
+    color: var(--color-cal-8);
+} /* Shared with me (inbound) - blue */
+.nav-item[data-section="recent"] i,
+.nav-item[data-section="recent"] .oxi-icon {
     color: var(--color-cal-6);
+} /* Recent - teal */
+.nav-item[data-section="favorites"] i,
+.nav-item[data-section="favorites"] .oxi-icon {
+    color: var(--color-cal-3);
+} /* Favorites - gold */
+.nav-item[data-section="photos"] i,
+.nav-item[data-section="photos"] .oxi-icon {
+    color: var(--color-cal-10);
+} /* Photos - magenta */
+.nav-item[data-section="music"] i,
+.nav-item[data-section="music"] .oxi-icon {
+    color: var(--color-cal-9);
+} /* Music - purple */
+.nav-item[data-section="trash"] i,
+.nav-item[data-section="trash"] .oxi-icon {
+    color: var(--color-cal-1);
 } /* Trash - red */
 
 /* Colourful icons at rest, but the ACTIVE item is always accent — one

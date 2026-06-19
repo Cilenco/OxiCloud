@@ -23,22 +23,30 @@
 		href: string;
 		label: string;
 		icon: string;
+		/** Stable key driving the per-section icon colour (see sidebar.css). */
+		section: string;
 		admin?: boolean;
 	}
 
 	const LINKS: NavLink[] = [
-		{ href: '/files', label: t('nav.files', 'Files'), icon: 'folder' },
-		{ href: '/shared', label: t('nav.shared', 'Shared'), icon: 'oxiexport' },
+		{ href: '/files', label: t('nav.files', 'Files'), icon: 'folder', section: 'files' },
+		{ href: '/shared', label: t('nav.shared', 'Shared'), icon: 'oxiexport', section: 'shared' },
 		{
 			href: '/shared-with-me',
 			label: t('nav.shared_with_me', 'Shared with me'),
-			icon: 'oxiimport'
+			icon: 'oxiimport',
+			section: 'shared-with-me'
 		},
-		{ href: '/recent', label: t('nav.recent', 'Recent'), icon: 'clock' },
-		{ href: '/favorites', label: t('nav.favorites', 'Favorites'), icon: 'star' },
-		{ href: '/photos', label: t('nav.photos', 'Photos'), icon: 'images' },
-		{ href: '/music', label: t('nav.music', 'Music'), icon: 'music' },
-		{ href: '/trash', label: t('nav.trash', 'Trash'), icon: 'trash' }
+		{ href: '/recent', label: t('nav.recent', 'Recent'), icon: 'clock', section: 'recent' },
+		{
+			href: '/favorites',
+			label: t('nav.favorites', 'Favorites'),
+			icon: 'star',
+			section: 'favorites'
+		},
+		{ href: '/photos', label: t('nav.photos', 'Photos'), icon: 'images', section: 'photos' },
+		{ href: '/music', label: t('nav.music', 'Music'), icon: 'music', section: 'music' },
+		{ href: '/trash', label: t('nav.trash', 'Trash'), icon: 'trash', section: 'trash' }
 	];
 
 	const isAdmin = $derived(session.user?.role === 'admin');
@@ -256,6 +264,7 @@
 				class="nav-item"
 				class:active={active(link.href)}
 				href={link.href}
+				data-section={link.section}
 				onclick={() => (sidebarOpen = false)}
 			>
 				<Icon name={link.icon} />
