@@ -39,7 +39,6 @@
 	import WopiEditor from '$lib/components/WopiEditor.svelte';
 	import { t } from '$lib/i18n/index.svelte';
 	import { confirmDialog, promptDialog } from '$lib/stores/dialogs.svelte';
-	import { badges } from '$lib/stores/badges.svelte';
 	import { files as filesStore } from '$lib/stores/files.svelte';
 	import { session } from '$lib/stores/session.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
@@ -58,7 +57,7 @@
 	// /files → home root; /files/a/b → folder b inside a inside home.
 	const pathSegments = $derived((page.params.path ?? '').split('/').filter((s) => s.length > 0));
 
-	let listing = $state<FolderListing>({ folders: [], files: [] });
+	let listing = $state<FolderListing>({ folders: [], files: [], favoriteIds: [], sharedIds: [] });
 	let crumbs = $state<Array<{ id: string; name: string }>>([]);
 	let currentId = $state<string | null>(null);
 	let loading = $state(false);
@@ -80,6 +79,12 @@
 	let actionTarget = $state<ActionTarget | null>(null);
 	let moveItems = $state<ActionTarget[] | null>(null);
 
+	// Favorite + shared badge sets for the current folder, seeded directly from
+	// the listing response (server-computed, scoped to these items — no extra
+	// per-navigation fetch) and updated optimistically on mutation.
+	let favoriteIds = $state<Set<string>>(new Set());
+	let sharedIds = $state<Set<string>>(new Set());
+
 	function openMove(kind: ItemType, id: string, name: string) {
 		actionTarget = { id, name, kind };
 		moveItems = null;
@@ -98,15 +103,21 @@
 	}
 
 	async function toggleFavorite(kind: ItemType, id: string) {
-		const isFav = badges.isFavorite(id);
+		const isFav = favoriteIds.has(id);
 		// Optimistic toggle, reverted on failure.
-		badges.setFavorite(id, !isFav);
+		const next = new Set(favoriteIds);
+		if (isFav) next.delete(id);
+		else next.add(id);
+		favoriteIds = next;
 		try {
 			if (isFav) await removeFavorite(kind, id);
 			else await addFavorite(kind, id);
 		} catch (e) {
 			errorToast(e);
-			badges.setFavorite(id, isFav);
+			const reverted = new Set(favoriteIds);
+			if (isFav) reverted.add(id);
+			else reverted.delete(id);
+			favoriteIds = reverted;
 		}
 	}
 
@@ -147,7 +158,8 @@
 			const [data, trail] = await Promise.all([listFolder(folderId), buildCrumbs(pathSegments)]);
 			listing = data;
 			crumbs = trail;
-			void badges.ensureLoaded();
+			favoriteIds = new Set(data.favoriteIds);
+			sharedIds = new Set(data.sharedIds);
 			maybeOpenDeepLink();
 		} catch (e) {
 			// 403 → friendly message rather than the raw "Forbidden" error string.
@@ -423,7 +435,7 @@
 
 	/** Batch add the selection to favorites — single /api/favorites/batch call. */
 	async function batchFavorites() {
-		const items = selectionTargets().filter((it) => !badges.isFavorite(it.id));
+		const items = selectionTargets().filter((it) => !favoriteIds.has(it.id));
 		if (items.length === 0) {
 			ui.notify(t('files.already_favorites', 'All selected items are already favorites'), 'info');
 			clearSelection();
@@ -439,7 +451,7 @@
 				})
 			});
 			if (!res.ok) throw new Error(`Server returned ${res.status}`);
-			for (const it of items) badges.setFavorite(it.id, true);
+			favoriteIds = new Set([...favoriteIds, ...items.map((it) => it.id)]);
 			ui.notify(t('files.added_favorites', 'Added to favorites'), 'success');
 			clearSelection();
 		} catch (e) {
@@ -1196,13 +1208,13 @@
 		<div class="name-cell">
 			<div class="file-icon"><Icon name="folder" /></div>
 			<span title={folder.name}>{folder.name}</span>
-			{#if badges.isFavorite(folder.id)}<div
+			{#if favoriteIds.has(folder.id)}<div
 					class="item-badge item-badge--fav"
 					title={t('files.favorited', 'Favorite')}
 				>
 					<Icon name="star" />
 				</div>{/if}
-			{#if badges.isShared(folder.id)}<div
+			{#if sharedIds.has(folder.id)}<div
 					class="file-badge file-badge-shared"
 					title={t('files.shared', 'Shared')}
 				>
@@ -1219,15 +1231,15 @@
 		<div class="action-cell">
 			<button
 				class="favorite-star"
-				class:active={badges.isFavorite(folder.id)}
-				title={badges.isFavorite(folder.id)
+				class:active={favoriteIds.has(folder.id)}
+				title={favoriteIds.has(folder.id)
 					? t('files.unfavorite', 'Remove favorite')
 					: t('files.favorite', 'Add favorite')}
-				aria-pressed={badges.isFavorite(folder.id)}
+				aria-pressed={favoriteIds.has(folder.id)}
 				onclick={(e) => {
 					e.stopPropagation();
 					void toggleFavorite('folder', folder.id);
-				}}><Icon name={badges.isFavorite(folder.id) ? 'star' : 'star-outline'} /></button
+				}}><Icon name={favoriteIds.has(folder.id) ? 'star' : 'star-outline'} /></button
 			>
 			<button
 				class="btn-action"
@@ -1314,13 +1326,13 @@
 				{/if}
 			</div>
 			<span title={file.name}>{file.name}</span>
-			{#if badges.isFavorite(file.id)}<div
+			{#if favoriteIds.has(file.id)}<div
 					class="item-badge item-badge--fav"
 					title={t('files.favorited', 'Favorite')}
 				>
 					<Icon name="star" />
 				</div>{/if}
-			{#if badges.isShared(file.id)}<div
+			{#if sharedIds.has(file.id)}<div
 					class="file-badge file-badge-shared"
 					title={t('files.shared', 'Shared')}
 				>
@@ -1338,15 +1350,15 @@
 		<div class="action-cell">
 			<button
 				class="favorite-star"
-				class:active={badges.isFavorite(file.id)}
-				title={badges.isFavorite(file.id)
+				class:active={favoriteIds.has(file.id)}
+				title={favoriteIds.has(file.id)
 					? t('files.unfavorite', 'Remove favorite')
 					: t('files.favorite', 'Add favorite')}
-				aria-pressed={badges.isFavorite(file.id)}
+				aria-pressed={favoriteIds.has(file.id)}
 				onclick={(e) => {
 					e.stopPropagation();
 					void toggleFavorite('file', file.id);
-				}}><Icon name={badges.isFavorite(file.id) ? 'star' : 'star-outline'} /></button
+				}}><Icon name={favoriteIds.has(file.id) ? 'star' : 'star-outline'} /></button
 			>
 			<button
 				class="btn-action"
@@ -1409,7 +1421,11 @@
 		void load();
 	}}
 />
-<ShareDialog bind:open={shareOpen} item={actionTarget} onshared={(id) => badges.markShared(id)} />
+<ShareDialog
+	bind:open={shareOpen}
+	item={actionTarget}
+	onshared={(id) => (sharedIds = new Set(sharedIds).add(id))}
+/>
 <FileViewer bind:open={viewerOpen} file={viewerFile} />
 <WopiEditor
 	bind:open={wopiOpen}
@@ -1540,7 +1556,7 @@
 			}}
 		>
 			<Icon name="star" />
-			{badges.isFavorite(ctxTarget.id)
+			{favoriteIds.has(ctxTarget.id)
 				? t('files.unfavorite', 'Remove favorite')
 				: t('files.favorite', 'Add favorite')}
 		</button>

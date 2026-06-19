@@ -13,6 +13,10 @@ const NO_CACHE: RequestInit = {
 export interface FolderListing {
 	folders: FolderItem[];
 	files: FileItem[];
+	/** Ids in this listing the caller has favorited (server-computed badge set). */
+	favoriteIds: string[];
+	/** Ids in this listing the caller has an outgoing share/grant on. */
+	sharedIds: string[];
 }
 
 /** Top-level folders for the user; the first entry is the home folder. */
@@ -37,10 +41,17 @@ export async function listFolder(folderId: string, forceRefresh = false): Promis
 	const res = await apiFetch(url, { credentials: 'same-origin', cache: 'no-store', headers });
 	if (res.status === 403) throw Object.assign(new Error('Forbidden'), { status: 403 });
 	if (!res.ok) throw new Error(`listing failed: ${res.status}`);
-	const listing = (await res.json()) as Partial<FolderListing>;
+	const listing = (await res.json()) as {
+		folders?: FolderItem[];
+		files?: FileItem[];
+		favorite_ids?: string[];
+		shared_ids?: string[];
+	};
 	return {
 		folders: Array.isArray(listing.folders) ? listing.folders : [],
-		files: Array.isArray(listing.files) ? listing.files : []
+		files: Array.isArray(listing.files) ? listing.files : [],
+		favoriteIds: Array.isArray(listing.favorite_ids) ? listing.favorite_ids : [],
+		sharedIds: Array.isArray(listing.shared_ids) ? listing.shared_ids : []
 	};
 }
 
