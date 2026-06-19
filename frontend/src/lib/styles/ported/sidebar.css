@@ -121,7 +121,9 @@
     color: var(--color-sidebar-text);
     font-size: 14.5px;
     font-weight: var(--weight-medium);
-    /* Button resets — .nav-item is a <button> (keyboard-operable nav). */
+    /* .nav-item is an <a> styled as a nav row — drop the default link underline
+       and reset the rest of the inherited link/button chrome. */
+    text-decoration: none;
     font-family: inherit;
     text-align: left;
     appearance: none;
