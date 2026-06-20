@@ -22,9 +22,13 @@
 				name: it.resource.name,
 				kind: it.resource_type,
 				iconClass: it.resource.icon_class,
-				path: it.granted_by
-					? t('shared_with_me.from', { who: it.granted_by }, 'Shared by {{who}}')
-					: it.resource.path,
+				// The sharer becomes the "owner" surface — ResourceList renders
+				// `<UserVignette userId>` (avatar / name / external badge),
+				// resolved lazily via `/api/users/{id}`. `path` keeps the
+				// resource's real location so the row still shows where it
+				// lives, not a translated string.
+				ownerId: it.granted_by ?? null,
+				path: it.resource.path,
 				size: it.resource_type === 'file' ? (it.resource as FileItem).size : null,
 				date: it.granted_at
 			})
@@ -79,6 +83,7 @@
 	{error}
 	emptyText={t('shared_with_me.empty', 'Nothing has been shared with you yet.')}
 	hasMore={!!cursor}
+	showOwner={true}
 	onloadmore={() => load(false)}
 	onopen={open}
 />
