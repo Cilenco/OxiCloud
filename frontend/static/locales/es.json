@@ -367,7 +367,9 @@
     "share": "Compartir",
     "view": "Ver",
     "selected_count": "{{count}} seleccionados",
-    "uploaded_saved": "Subida completa — {{mb}} MB deduplicados"
+    "uploaded_saved": "Subida completa — {{mb}} MB deduplicados",
+    "uploaded_partial": "{{ok}} subidos, {{failed}} fallaron",
+    "upload_failed": "La subida falló"
   },
   "dialogs": {
     "rename_folder": "Renombrar carpeta",

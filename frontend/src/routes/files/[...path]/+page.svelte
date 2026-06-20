@@ -289,6 +289,34 @@
 		}
 	}
 
+	// Upload at most this many files concurrently. Bounded so one stuck file
+	// blocks only its own lane (the others keep going) without overwhelming the
+	// browser's per-host connection cap or spawning too many delta workers.
+	const UPLOAD_CONCURRENCY = 4;
+
+	/** Per-file deadline (ms): a tiny file that stops responding fails after 2
+	 *  min; larger files get proportionally longer (20 KB/s floor) so a slow but
+	 *  progressing transfer is never killed. Stops a stuck file pinning its lane
+	 *  forever. */
+	const uploadDeadlineMs = (file: File) => Math.max(120_000, (file.size / (20 * 1024)) * 1000);
+
+	/** Reject after `ms` if `p` hasn't settled. */
+	function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+		return new Promise((resolve, reject) => {
+			const timer = setTimeout(() => reject(new Error('upload timed out')), ms);
+			p.then(
+				(v) => {
+					clearTimeout(timer);
+					resolve(v);
+				},
+				(e) => {
+					clearTimeout(timer);
+					reject(e);
+				}
+			);
+		});
+	}
+
 	/**
 	 * Upload one file through the best available path, returning the bytes saved
 	 * by deduplication (0 when the body was sent in full). Order:
@@ -296,7 +324,8 @@
 	 *      check found the server already has this exact blob).
 	 *   2. Delta upload — sub-file CDC dedup for large files (>= 8 MB).
 	 *   3. Plain byte upload — fallback when neither applies.
-	 * Throws on a hard failure (e.g. quota).
+	 * Throws on a hard failure; the error carries `isQuota` so the batch can stop
+	 * early when the disk is full.
 	 */
 	async function uploadOneFile(
 		folderId: string | null,
@@ -308,14 +337,95 @@
 			(ownedHash && folderId ? await instantUploadOwned(folderId, file, ownedHash) : null) ??
 			(await tryDeltaUpload(file, folderId, (pct) => report(pct / 100)));
 		if (dedup) {
-			if (!dedup.ok) throw new Error(dedup.errorMsg ?? 'upload failed');
+			if (!dedup.ok) {
+				const err = new Error(dedup.errorMsg ?? 'upload failed') as Error & { isQuota?: boolean };
+				err.isQuota = dedup.isQuotaError ?? false;
+				throw err;
+			}
 			return dedup.savedBytes ?? 0;
 		}
 		await uploadFileWithProgress(folderId, file, report);
 		return 0;
 	}
 
-	/** Final bell message for a finished upload, noting deduplicated bytes. */
+	/**
+	 * Upload `items` ({file, folderId}) with bounded concurrency, a per-file
+	 * deadline and live aggregate progress. A stuck or failing file no longer
+	 * freezes the batch: it blocks only its own lane (the rest keep going) and
+	 * eventually times out / is skipped. Quota exhaustion stops the run early.
+	 * Returns the bytes deduplicated and the count of files that failed.
+	 */
+	async function uploadAll(
+		items: { file: File; folderId: string | null }[],
+		nid: number,
+		label: (done: number) => string
+	): Promise<{ savedBytes: number; failures: number }> {
+		const total = items.length;
+		const owned = await resolveOwnedHashes(items.map((it) => it.file));
+		const frac = new Array<number>(total).fill(0);
+		let savedBytes = 0;
+		let failures = 0;
+		let next = 0;
+
+		const refresh = () => {
+			let sum = 0;
+			for (const x of frac) sum += x;
+			ui.updateProgress(nid, Math.round((sum / total) * 100), label(Math.round(sum)));
+		};
+
+		const worker = async () => {
+			while (next < total) {
+				const i = next++;
+				const { file, folderId } = items[i];
+				try {
+					savedBytes += await withTimeout(
+						uploadOneFile(
+							folderId,
+							file,
+							(f) => {
+								if (!Number.isNaN(f)) frac[i] = Math.min(1, f);
+								refresh();
+							},
+							owned.get(file) ?? null
+						),
+						uploadDeadlineMs(file)
+					);
+				} catch (e) {
+					failures++;
+					// A full disk won't recover within this batch — stop pulling new
+					// work so we don't fire hundreds of doomed uploads.
+					if ((e as { isQuota?: boolean } | null)?.isQuota) next = total;
+				} finally {
+					frac[i] = 1;
+					refresh();
+				}
+			}
+		};
+
+		await Promise.all(Array.from({ length: Math.min(UPLOAD_CONCURRENCY, total) }, worker));
+		return { savedBytes, failures };
+	}
+
+	/** Resolve the upload's bell notification: success, partial, or failure. */
+	function finishUpload(nid: number, savedBytes: number, failures: number, total: number) {
+		if (failures === 0) {
+			ui.finishProgress(nid, uploadDoneMessage(savedBytes), 'success');
+		} else if (failures < total) {
+			ui.finishProgress(
+				nid,
+				t(
+					'files.uploaded_partial',
+					{ ok: total - failures, failed: failures },
+					`${total - failures} uploaded, ${failures} failed`
+				),
+				'warning'
+			);
+		} else {
+			ui.finishProgress(nid, t('files.upload_failed', 'Upload failed'), 'error');
+		}
+	}
+
+	/** Final bell message for a fully-successful upload, noting deduplicated bytes. */
 	function uploadDoneMessage(savedBytes: number): string {
 		if (savedBytes <= 0) return t('files.uploaded', 'Upload complete');
 		const mb = (savedBytes / (1024 * 1024)).toFixed(1);
@@ -335,21 +445,13 @@
 				? t('files.uploading_file', { name: files[0].name }, `Uploading ${files[0].name}…`)
 				: t('files.uploading_n', { done, total }, `Uploading ${done}/${total} files…`);
 		const nid = ui.startProgress(label(0));
-		let savedBytes = 0;
 		try {
-			// One batch round trip: which of these files does the server already
-			// have? Owned ones upload as zero bytes; the rest go delta/plain.
-			const owned = await resolveOwnedHashes(files);
-			for (let i = 0; i < files.length; i++) {
-				const report = (frac: number) => {
-					const base = i / total;
-					const step = Number.isNaN(frac) ? 0 : frac / total;
-					ui.updateProgress(nid, Math.round((base + step) * 100), label(i));
-				};
-				savedBytes += await uploadOneFile(currentId, files[i], report, owned.get(files[i]) ?? null);
-				ui.updateProgress(nid, Math.round(((i + 1) / total) * 100), label(i + 1));
-			}
-			ui.finishProgress(nid, uploadDoneMessage(savedBytes), 'success');
+			const { savedBytes, failures } = await uploadAll(
+				files.map((file) => ({ file, folderId: currentId })),
+				nid,
+				label
+			);
+			finishUpload(nid, savedBytes, failures, total);
 			await reload();
 			// Storage usage changed server-side — pull the fresh figure so the
 			// "Almacenamiento" bar moves off its login value instead of 0%.
@@ -990,7 +1092,6 @@
 		// Same bell progress notification as uploadBatch, so folder uploads show
 		// live progress + a final result instead of staying silent until the end.
 		const nid = ui.startProgress(label(0));
-		let savedBytes = 0;
 		try {
 			// Map each relative directory path to its created folder id; '' = current.
 			const dirIds = new Map<string, string | null>([['', currentId]]);
@@ -1005,27 +1106,18 @@
 				return created.id;
 			}
 
-			// One batch round trip for the whole tree: which files does the server
-			// already have? Owned ones upload as zero bytes.
-			const owned = await resolveOwnedHashes(entries.map((e) => e.file));
-			for (let i = 0; i < entries.length; i++) {
-				const { file, relativePath } = entries[i];
+			// Create the folder tree first (sequentially — folders are few, and
+			// concurrent creation of the same dir would race), then upload the
+			// files into it with bounded concurrency.
+			const items: { file: File; folderId: string | null }[] = [];
+			for (const { file, relativePath } of entries) {
 				const segs = relativePath.split('/');
 				segs.pop(); // drop the filename, keep the directory trail
-				const dirId = await ensureDir(segs.join('/'));
-				savedBytes += await uploadOneFile(
-					dirId,
-					file,
-					(frac) => {
-						const base = i / total;
-						const step = Number.isNaN(frac) ? 0 : frac / total;
-						ui.updateProgress(nid, Math.round((base + step) * 100), label(i));
-					},
-					owned.get(file) ?? null
-				);
-				ui.updateProgress(nid, Math.round(((i + 1) / total) * 100), label(i + 1));
+				items.push({ file, folderId: await ensureDir(segs.join('/')) });
 			}
-			ui.finishProgress(nid, uploadDoneMessage(savedBytes), 'success');
+
+			const { savedBytes, failures } = await uploadAll(items, nid, label);
+			finishUpload(nid, savedBytes, failures, total);
 			await reload();
 			void session.refresh();
 		} catch (err) {

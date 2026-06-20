@@ -81,7 +81,12 @@ export function uploadFileWithProgress(
 		};
 		xhr.onload = () => {
 			if (xhr.status >= 200 && xhr.status < 300) resolve();
-			else reject(new Error(`upload failed: ${xhr.status}`));
+			else {
+				// Flag quota so a batch can stop early instead of retrying every file.
+				const err = new Error(`upload failed: ${xhr.status}`) as Error & { isQuota?: boolean };
+				err.isQuota = xhr.status === 507;
+				reject(err);
+			}
 		};
 		xhr.onerror = () => reject(new Error('upload failed: network error'));
 		xhr.send(form);

@@ -502,6 +502,8 @@
     "unfavorite": "Remove favorite",
     "uploaded": "Upload complete",
     "uploaded_saved": "Upload complete — {{mb}} MB deduplicated",
+    "uploaded_partial": "{{ok}} uploaded, {{failed}} failed",
+    "upload_failed": "Upload failed",
     "uploading": "Uploading…",
     "uploading_file": "Uploading {{name}}…",
     "uploading_n": "Uploading {{done}}/{{total}} files…",
