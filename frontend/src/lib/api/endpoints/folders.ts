@@ -1,7 +1,7 @@
 /** Folder endpoints — ported from filesModel.js + fileOperations.js. */
 import { apiFetch, apiJson } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
-import type { FileItem, FolderItem } from '$lib/api/types';
+import type { FileItem, FolderItem, ItemType } from '$lib/api/types';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 const NO_CACHE: RequestInit = {
@@ -88,21 +88,6 @@ export function getFolderName(id: string): string | undefined {
 	return folderNames.get(id);
 }
 
-function parseListing(raw: unknown): FolderListing {
-	const o = (raw ?? {}) as {
-		folders?: FolderItem[];
-		files?: FileItem[];
-		favorite_ids?: string[];
-		shared_ids?: string[];
-	};
-	return {
-		folders: Array.isArray(o.folders) ? o.folders : [],
-		files: Array.isArray(o.files) ? o.files : [],
-		favoriteIds: Array.isArray(o.favorite_ids) ? o.favorite_ids : [],
-		sharedIds: Array.isArray(o.shared_ids) ? o.shared_ids : []
-	};
-}
-
 export async function getFolder(id: string): Promise<FolderItem> {
 	const folder = await apiJson<FolderItem>(`/api/folders/${id}`, NO_CACHE);
 	rememberFolderName(folder.id, folder.name);
@@ -110,32 +95,46 @@ export async function getFolder(id: string): Promise<FolderItem> {
 }
 
 /**
- * Fetch a folder listing, optionally conditionally. With `etag` set it sends
- * `If-None-Match`; the server replies 304 (empty body) when nothing changed —
- * the ETag covers folders + files + favorite/share badges — so the caller can
- * keep its cached copy. `cache: 'no-store'` keeps the browser HTTP cache out of
- * the way; revalidation is driven entirely by our own ETag.
+ * Fetch a folder's complete listing (sub-folders + files), rebuilt from the
+ * cursor-paginated `/api/folders/{id}/resources` feed — the old combined
+ * `/listing` route was removed. We page through to the end (folders sort first
+ * under `order_by=name`) and split the mixed resource items back into
+ * `folders` / `files`.
+ *
+ * That feed carries no whole-listing ETag, so the 304 conditional fast-path is
+ * gone: `opts.etag` is accepted for call-site compatibility but ignored, and the
+ * in-memory `folderCache` is what the views revalidate against. Favorite/share
+ * badge sets aren't part of this feed either, so they come back empty for now.
  */
 export async function fetchFolderListing(
 	folderId: string,
 	opts: { etag?: string; forceRefresh?: boolean } = {}
 ): Promise<FolderListingResult> {
-	const headers: Record<string, string> = {};
-	if (opts.etag) headers['If-None-Match'] = opts.etag;
-	let url = `/api/folders/${folderId}/listing`;
-	if (opts.forceRefresh) {
-		url += '?force_refresh=true';
-		headers['X-Force-Refresh'] = 'true';
-	}
-	const res = await apiFetch(url, { credentials: 'same-origin', cache: 'no-store', headers });
-	if (res.status === 304) return { status: 304 };
-	if (res.status === 403) throw Object.assign(new Error('Forbidden'), { status: 403 });
-	if (!res.ok) throw new Error(`listing failed: ${res.status}`);
-	return {
-		status: 200,
-		listing: parseListing(await res.json()),
-		etag: res.headers.get('ETag') ?? undefined
-	};
+	const folders: FolderItem[] = [];
+	const files: FileItem[] = [];
+	let cursor: string | undefined;
+	do {
+		const params = new URLSearchParams({ order_by: 'name', limit: '200' });
+		if (opts.forceRefresh) params.set('force_refresh', 'true');
+		if (cursor) params.set('cursor', cursor);
+		const res = await apiFetch(`/api/folders/${folderId}/resources?${params.toString()}`, {
+			credentials: 'same-origin',
+			cache: 'no-store'
+		});
+		if (res.status === 403) throw Object.assign(new Error('Forbidden'), { status: 403 });
+		if (!res.ok) throw new Error(`listing failed: ${res.status}`);
+		const page = (await res.json()) as {
+			items?: { resource_type: ItemType; resource: FolderItem | FileItem }[];
+			next_cursor?: string;
+		};
+		for (const it of page.items ?? []) {
+			if (it.resource_type === 'folder') folders.push(it.resource as FolderItem);
+			else files.push(it.resource as FileItem);
+		}
+		cursor = page.next_cursor;
+	} while (cursor);
+
+	return { status: 200, listing: { folders, files, favoriteIds: [], sharedIds: [] } };
 }
 
 /** Non-conditional listing fetch (e.g. the move-dialog folder tree). */

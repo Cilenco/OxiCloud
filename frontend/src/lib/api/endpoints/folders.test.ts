@@ -15,19 +15,15 @@ import {
 	type FolderListing
 } from './folders';
 
-type RawListing = {
-	folders?: unknown[];
-	files?: unknown[];
-	favorite_ids?: string[];
-	shared_ids?: string[];
-};
+type ResourceItem = { resource_type: 'file' | 'folder'; resource: { id: string; name?: string } };
+type ResourcePage = { items?: ResourceItem[]; next_cursor?: string };
 
-function fakeRes(opts: { status: number; body?: RawListing; etag?: string }): Response {
+function fakeRes(opts: { status: number; body?: ResourcePage }): Response {
 	return {
 		status: opts.status,
 		ok: opts.status >= 200 && opts.status < 300,
 		json: async () => opts.body ?? {},
-		headers: { get: (k: string) => (k.toLowerCase() === 'etag' ? (opts.etag ?? null) : null) }
+		headers: { get: () => null }
 	} as unknown as Response;
 }
 
@@ -38,39 +34,50 @@ const emptyListing = (): FolderListing => ({
 	sharedIds: []
 });
 
-const initHeaders = (call: number): Record<string, string> =>
-	(vi.mocked(apiFetch).mock.calls[call][1]?.headers ?? {}) as Record<string, string>;
-
 beforeEach(() => {
 	vi.clearAllMocks();
 	invalidateFolderCache();
 });
 
-describe('fetchFolderListing (conditional)', () => {
-	it('parses a 200, returns the ETag, and sends no If-None-Match without one', async () => {
+describe('fetchFolderListing (cursor-paginated /resources)', () => {
+	it('splits one page of resources into folders + files', async () => {
 		vi.mocked(apiFetch).mockResolvedValue(
 			fakeRes({
 				status: 200,
-				body: { folders: [], files: [], favorite_ids: ['a'], shared_ids: ['b'] },
-				etag: '"v1"'
+				body: {
+					items: [
+						{ resource_type: 'folder', resource: { id: 'd1', name: 'Docs' } },
+						{ resource_type: 'file', resource: { id: 'x1', name: 'a.txt' } }
+					]
+				}
 			})
 		);
 		const r = await fetchFolderListing('f1');
 		expect(r.status).toBe(200);
-		expect(r.etag).toBe('"v1"');
-		expect(r.listing?.favoriteIds).toEqual(['a']);
-		expect(r.listing?.sharedIds).toEqual(['b']);
-		expect(initHeaders(0)['If-None-Match']).toBeUndefined();
-		// No cache-busting query param — the URL must be stable for revalidation.
-		expect(vi.mocked(apiFetch).mock.calls[0][0]).toBe('/api/folders/f1/listing');
+		expect(r.listing?.folders.map((f) => f.id)).toEqual(['d1']);
+		expect(r.listing?.files.map((f) => f.id)).toEqual(['x1']);
+		expect(r.listing?.favoriteIds).toEqual([]);
+		expect(vi.mocked(apiFetch).mock.calls[0][0]).toContain('/api/folders/f1/resources');
 	});
 
-	it('sends If-None-Match and surfaces a 304 with no body', async () => {
-		vi.mocked(apiFetch).mockResolvedValue(fakeRes({ status: 304 }));
-		const r = await fetchFolderListing('f1', { etag: '"v1"' });
-		expect(r.status).toBe(304);
-		expect(r.listing).toBeUndefined();
-		expect(initHeaders(0)['If-None-Match']).toBe('"v1"');
+	it('follows next_cursor across pages', async () => {
+		vi.mocked(apiFetch)
+			.mockResolvedValueOnce(
+				fakeRes({
+					status: 200,
+					body: { items: [{ resource_type: 'file', resource: { id: 'p1' } }], next_cursor: 'c2' }
+				})
+			)
+			.mockResolvedValueOnce(
+				fakeRes({
+					status: 200,
+					body: { items: [{ resource_type: 'file', resource: { id: 'p2' } }] }
+				})
+			);
+		const r = await fetchFolderListing('f1');
+		expect(r.listing?.files.map((f) => f.id)).toEqual(['p1', 'p2']);
+		expect(vi.mocked(apiFetch)).toHaveBeenCalledTimes(2);
+		expect(vi.mocked(apiFetch).mock.calls[1][0]).toContain('cursor=c2');
 	});
 
 	it('throws a 403 carrying its status', async () => {
